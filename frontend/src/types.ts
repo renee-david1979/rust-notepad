@@ -39,6 +39,7 @@ export interface PersistedState {
   open_tabs: SavedTab[];
   active_tab: number;
   active_pane: number;
+  split_ratio: number | null;
   recent_files: string[];
 }
 
@@ -90,6 +91,7 @@ export function defaultSettings(): PersistedState {
     open_tabs: [],
     active_tab: 0,
     active_pane: 1,
+    split_ratio: null,
     recent_files: [],
   };
 }

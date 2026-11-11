@@ -226,6 +226,7 @@ function buildSession(): PersistedState {
       tabs.tabs.findIndex((t) => t.id === tabs.active()?.id),
     ),
     active_pane: tabs.activePane,
+    split_ratio: panes.splitRatio,
     recent_files: recentFiles,
   };
 }
@@ -249,6 +250,19 @@ function persistSessionSoon(): void {
 function addRecent(path: string): void {
   recentFiles = [path, ...recentFiles.filter((p) => p !== path)].slice(0, 12);
   persistSessionSoon();
+}
+
+/**
+ * Which split pane contains the given physical-pixel window coordinate.
+ * Falls back to pane 1 for points on non-pane chrome (panels, status bar).
+ */
+function paneAtPoint(x: number, y: number): PaneId {
+  const el = document.elementFromPoint(
+    x / window.devicePixelRatio,
+    y / window.devicePixelRatio,
+  );
+  const paneEl = el?.closest("[data-pane]") as HTMLElement | null;
+  return paneEl?.dataset.pane === "2" ? 2 : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +470,11 @@ async function openPath(path: string, pane: PaneId = tabs.activePane): Promise<v
     tabs.openFile(payload, pane);
     addRecent(path);
   } catch (err) {
-    toast(`Could not open ${path}: ${errorMessage(err)}`);
+    if (/is a directory/i.test(errorMessage(err))) {
+      toast(`Skipped folder "${basename(path)}" - drop files, not folders`);
+    } else {
+      toast(`Could not open ${path}: ${errorMessage(err)}`);
+    }
   }
 }
 
@@ -1081,6 +1099,9 @@ async function start(): Promise<void> {
       panes.syncEditors(tabs);
       renderTabs();
     },
+    onSplitResize: () => {
+      persistSessionSoon();
+    },
   });
 
   bottomPanel = new BottomPanel($("bottom-panel"));
@@ -1196,6 +1217,14 @@ async function start(): Promise<void> {
       tabs.activePane = other;
     }
   }
+  // Re-enable split view when the saved session had tabs in pane 2, and
+  // restore the saved pane widths.
+  if (tabs.tabsIn(2).length > 0) {
+    panes.setSplit(true);
+  }
+  if (session.split_ratio != null) {
+    panes.setSplitRatio(session.split_ratio);
+  }
   onTabsChanged();
 
   const activeTab = tabs.active();
@@ -1255,6 +1284,27 @@ async function start(): Promise<void> {
       return;
     }
     showExtBanner(tab);
+  });
+
+  // Open files dropped onto the window (dragDropEnabled in tauri.conf.json).
+  await appWindow.onDragDropEvent(async (event) => {
+    if (event.payload.type !== "drop") {
+      return;
+    }
+    const dropped = event.payload.paths ?? [];
+    if (dropped.length === 0) {
+      return;
+    }
+    const pane: PaneId = panes.split
+      ? paneAtPoint(event.payload.position.x, event.payload.position.y)
+      : tabs.activePane;
+    const open = dropped.slice(0, 20);
+    if (dropped.length > open.length) {
+      toast(`Opened the first ${open.length} of ${dropped.length} dropped items`);
+    }
+    for (const path of open) {
+      await openPath(path, pane);
+    }
   });
 
   void refreshPlugins();

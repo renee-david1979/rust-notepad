@@ -141,9 +141,16 @@ export class TabManager {
 
   /** Move a tab into another pane (used by split view), focusing it there. */
   moveToPane(id: number, pane: PaneId): void {
+    if (this.placeInPane(id, pane)) {
+      this.onChange();
+    }
+  }
+
+  /** Pane move without firing onChange. Returns false when nothing moved. */
+  private placeInPane(id: number, pane: PaneId): boolean {
     const tab = this.byId(id);
     if (!tab || tab.pane === pane) {
-      return;
+      return false;
     }
     const from = tab.pane;
     tab.pane = pane;
@@ -153,6 +160,35 @@ export class TabManager {
       const next = this.tabsIn(from)[0];
       this.activeByPane[from] = next ? next.id : null;
     }
+    return true;
+  }
+
+  /**
+   * Reorder a tab to sit before `beforeId` within `pane` (drag & drop).
+   * `beforeId = null` places it after the pane's last tab. A tab dropped
+   * on the other pane's tab strip is moved there first.
+   */
+  reorder(id: number, beforeId: number | null, pane: PaneId): void {
+    const tab = this.byId(id);
+    if (!tab) {
+      return;
+    }
+    this.placeInPane(id, pane);
+    const from = this.tabs.indexOf(tab);
+    this.tabs.splice(from, 1);
+    let idx =
+      beforeId != null ? this.tabs.findIndex((t) => t.id === beforeId) : -1;
+    if (idx < 0) {
+      // Append after the pane's last tab.
+      idx = this.tabs.length;
+      for (let i = this.tabs.length - 1; i >= 0; i--) {
+        if (this.tabs[i].pane === pane) {
+          idx = i + 1;
+          break;
+        }
+      }
+    }
+    this.tabs.splice(idx, 0, tab);
     this.onChange();
   }
 

@@ -73,6 +73,9 @@ pub struct PersistedState {
     /// Which split pane has keyboard focus (1 or 2).
     #[serde(default = "default_pane")]
     pub active_pane: u32,
+    /// Pane-1 share of the split width when split view was last used.
+    #[serde(default)]
+    pub split_ratio: Option<f32>,
     #[serde(default)]
     pub recent_files: Vec<String>,
 }
@@ -100,6 +103,7 @@ impl Default for PersistedState {
             open_tabs: Vec::new(),
             active_tab: 0,
             active_pane: 1,
+            split_ratio: None,
             recent_files: Vec::new(),
         }
     }
@@ -152,6 +156,7 @@ mod tests {
                 },
             ],
             active_tab: 1,
+            split_ratio: Some(0.35),
             recent_files: vec!["/tmp/a.txt".into()],
             ..Default::default()
         };
@@ -187,6 +192,7 @@ mod tests {
         assert_eq!(loaded.theme, "light");
         assert!(loaded.auto_reload);
         assert_eq!(loaded.tab_size, 4);
+        assert_eq!(loaded.split_ratio, None);
     }
 
     #[test]
@@ -194,5 +200,25 @@ mod tests {
         let tab = SavedTab::default();
         assert_eq!(tab.cursor_line, 1);
         assert_eq!(tab.cursor_column, 1);
+    }
+
+    #[test]
+    fn split_ratio_keeps_values_verbatim() {
+        // Out-of-range values are stored as-is: clamping is the frontend's
+        // job (PaneManager.setSplitRatio), the session file is neutral.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cases = [
+            (r#""split_ratio":0.35"#, Some(0.35_f32)),
+            (r#""split_ratio":null"#, None),
+            (r#""split_ratio":5.0"#, Some(5.0_f32)),
+        ];
+        for (field, expected) in cases {
+            let json = format!(
+                r#"{{"theme":"dark","font_size":14.0,"open_tabs":[],"active_tab":0,{field}}}"#
+            );
+            std::fs::write(dir.path().join("session.json"), json).expect("write");
+            let loaded = PersistedState::load_from(dir.path());
+            assert_eq!(loaded.split_ratio, expected);
+        }
     }
 }
