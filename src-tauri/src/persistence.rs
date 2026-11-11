@@ -13,6 +13,10 @@ use crate::error::{io_error, AppResult};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedTab {
     pub path: Option<String>,
+    /// Display title for untitled buffers ("Untitled 2", ...). Kept so the
+    /// numbering survives a restart; `None` falls back to a generated name.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default = "default_cursor")]
@@ -39,6 +43,7 @@ impl Default for SavedTab {
     fn default() -> Self {
         Self {
             path: None,
+            title: None,
             content: None,
             cursor_line: 1,
             cursor_column: 1,
@@ -200,6 +205,35 @@ mod tests {
         let tab = SavedTab::default();
         assert_eq!(tab.cursor_line, 1);
         assert_eq!(tab.cursor_column, 1);
+    }
+
+    #[test]
+    fn tab_title_is_optional_and_round_trips() {
+        // Old sessions lack `title` entirely: it must load as None.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("session.json"),
+            r#"{"theme":"dark","font_size":14.0,"open_tabs":[
+                {"path":null,"content":"draft"}],"active_tab":0}"#,
+        )
+        .expect("write");
+        let loaded = PersistedState::load_from(dir.path());
+        assert_eq!(loaded.open_tabs.len(), 1);
+        assert_eq!(loaded.open_tabs[0].title, None);
+
+        // A saved title survives a save/load round trip.
+        let state = PersistedState {
+            open_tabs: vec![SavedTab {
+                title: Some("Untitled 7".into()),
+                content: Some("draft".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        state.save_to(dir.path()).expect("save");
+        let loaded = PersistedState::load_from(dir.path());
+        assert_eq!(loaded.open_tabs.len(), 1);
+        assert_eq!(loaded.open_tabs[0].title.as_deref(), Some("Untitled 7"));
     }
 
     #[test]

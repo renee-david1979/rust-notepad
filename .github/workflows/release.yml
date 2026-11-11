@@ -2,8 +2,8 @@ name: Release
 
 # Builds RustNotepad bundles (.app/.dmg, .msi/.exe, .deb/.AppImage) for tag
 # pushes and attaches them to a draft GitHub release via tauri-action.
-# NOTE: this workflow has not yet been exercised (it requires pushing a
-# v*.*.* tag); the local `npm run tauri build` path is verified.
+# Per-platform bundles come from `bundle.targets: "all"` in tauri.conf.json.
+# The draft release must be published manually on GitHub.
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - name: Install Linux dependencies (Tauri webview)

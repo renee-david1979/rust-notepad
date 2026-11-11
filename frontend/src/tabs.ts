@@ -1,4 +1,6 @@
-import { monaco } from "./monaco-setup";
+// The .ts extension is deliberate: Node's test runner (frontend/tests/)
+// resolves only explicit extensions; Vite accepts either form.
+import { monaco } from "./monaco-setup.ts";
 import type { FilePayload, SavePayload } from "./types";
 
 export type PaneId = 1 | 2;
@@ -58,8 +60,7 @@ export class TabManager {
     return tab.model.getValue() !== tab.savedContent;
   }
 
-  createUntitled(initialContent = "", pane: PaneId = this.activePane): Tab {
-    const count = this.tabs.filter((t) => t.path === null).length + 1;
+  createUntitled(initialContent = "", pane: PaneId = this.activePane, title?: string): Tab {
     const model = monaco.editor.createModel(
       initialContent,
       "plaintext",
@@ -68,7 +69,7 @@ export class TabManager {
     model.setEOL(monaco.editor.EndOfLineSequence.LF);
     const tab: Tab = {
       id: this.nextId++,
-      title: `Untitled ${count}`,
+      title: title ?? this.nextUntitledTitle(),
       path: null,
       pane,
       model,
@@ -85,6 +86,30 @@ export class TabManager {
     this.tabs.push(tab);
     this.activate(tab.id);
     return tab;
+  }
+
+  /**
+   * Next free "Untitled N": continues past the highest existing untitled
+   * number so titles never collide (the old count+1 scheme duplicated
+   * names after a tab was closed).
+   */
+  private nextUntitledTitle(): string {
+    let max = 0;
+    for (const tab of this.tabs) {
+      if (tab.path !== null) {
+        continue;
+      }
+      const match = /^Untitled (\d+)$/.exec(tab.title);
+      if (match) {
+        const value = Number(match[1]);
+        // Skip absurd hand-edited numbers (non-finite or > 2^53): they can
+        // never equal a generated name, so ignoring them cannot collide.
+        if (Number.isSafeInteger(value)) {
+          max = Math.max(max, value);
+        }
+      }
+    }
+    return `Untitled ${max + 1}`;
   }
 
   openFile(payload: FilePayload, pane: PaneId = this.activePane): Tab {

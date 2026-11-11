@@ -19,6 +19,8 @@ export interface SavePayload {
 
 export interface SavedTab {
   path: string | null;
+  /** Untitled buffer display name ("Untitled 2", ...); null for file tabs. */
+  title: string | null;
   content: string | null;
   cursor_line: number;
   cursor_column: number;

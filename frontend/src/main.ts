@@ -213,6 +213,9 @@ function buildSession(): PersistedState {
     auto_reload: settings.auto_reload,
     open_tabs: tabs.tabs.map((t) => ({
       path: t.path,
+      // Keep untitled names across restarts; file titles come from the
+      // file name on restore.
+      title: t.path === null ? t.title : null,
       // Untitled buffers always persist their content; file tabs persist
       // a draft copy only while dirty (crash recovery for unsaved edits).
       content: t.path && !tabs.isDirty(t) ? null : t.model.getValue(),
@@ -1183,7 +1186,14 @@ async function start(): Promise<void> {
           ? tabs.tabs[tabs.tabs.length - 1]
           : tabs.byPath(saved.path);
     } else {
-      tab = tabs.createUntitled(saved.content ?? "", pane);
+      // A saved title keeps the buffer's name across restarts ("Untitled 3"
+      // stays "Untitled 3" instead of being renumbered 1/2/3). `||` so an
+      // empty saved title regenerates rather than rendering blank.
+      tab = tabs.createUntitled(
+        saved.content ?? "",
+        pane,
+        saved.title || undefined,
+      );
       if (saved.content) {
         // A restored untitled buffer is unsaved work: keep it dirty so
         // closing it prompts instead of silently dropping the draft.
