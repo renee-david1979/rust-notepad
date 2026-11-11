@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RustNotepad</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="menubar"></div>
+      <div id="toolbar"></div>
+      <div id="tabbar"></div>
+      <div id="editor-wrap">
+        <div id="editor-host"></div>
+        <div id="ext-banner" class="hidden">
+          <span id="ext-banner-text"></span>
+          <button id="ext-reload">Reload</button>
+          <button id="ext-overwrite">Overwrite</button>
+          <button id="ext-dismiss">Dismiss</button>
+        </div>
+      </div>
+      <div id="find-panel" class="hidden"></div>
+      <div id="bottom-panel" class="hidden">
+        <div class="panel-tabs">
+          <button class="panel-tab" data-panel="find-results">Find Results</button>
+          <button class="panel-tab" data-panel="plugins">Plugins</button>
+          <button id="panel-close" title="Close panel">×</button>
+        </div>
+        <div id="panel-find-results" class="panel-content hidden"></div>
+        <div id="panel-plugins" class="panel-content hidden"></div>
+      </div>
+      <div id="statusbar"></div>
+    </div>
+    <div id="modal-overlay" class="hidden">
+      <div id="modal-card">
+        <h3 id="modal-title"></h3>
+        <div id="modal-body"></div>
+        <div id="modal-actions"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

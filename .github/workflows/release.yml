@@ -1,5 +1,10 @@
 name: Release
 
+# Builds RustNotepad bundles (.app/.dmg, .msi/.exe, .deb/.AppImage) for tag
+# pushes and attaches them to a draft GitHub release via tauri-action.
+# NOTE: this workflow has not yet been exercised (it requires pushing a
+# v*.*.* tag); the local `npm run tauri build` path is verified.
+
 on:
   push:
     tags:
@@ -10,224 +15,45 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  BINARY_NAME: rust-notepad
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1. Run tests on all platforms before building release artifacts
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev \
-            libwayland-dev
-
-      - name: Run tests
-        run: cargo test --verbose
-
-  # ---------------------------------------------------------------------------
-  # 2. Build portable release binaries for every target
-  # ---------------------------------------------------------------------------
-  build:
-    name: Build (${{ matrix.target }})
-    needs: test
-    runs-on: ${{ matrix.os }}
-    # Cross-compiled targets are best-effort (GUI deps may be missing)
-    continue-on-error: ${{ matrix.use_cross || false }}
+  release:
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ---- Windows x86_64 ----
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
-            ext: .exe
-
-          # ---- Windows ARM64 ----
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
-            ext: .exe
-
-          # ---- Linux x86_64 ----
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            ext: ""
-
-          # ---- Linux ARM64 (via cross) ----
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            ext: ""
-            use_cross: true
-
-          # ---- macOS x86_64 (Intel) ----
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-            ext: ""
-
-          # ---- macOS ARM64 (Apple Silicon) ----
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-            ext: ""
-
+          - os: macos-latest
+          - os: ubuntu-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
         with:
-          key: ${{ matrix.target }}
+          node-version: 22
+          cache: npm
 
-      - name: Install Linux dependencies
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Install Linux dependencies (Tauri webview)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev \
-            libwayland-dev
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+      - run: npm ci
 
-      - name: Build release binary
-        if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build release binary (cross)
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      # -- Package --
-      - name: Determine version
-        id: version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          STAGING="TextEdit-${{ steps.version.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}${{ matrix.ext }}" "$STAGING/"
-          cp README.md "$STAGING/" 2>/dev/null || true
-          cp LICENSE* "$STAGING/" 2>/dev/null || true
-          tar czf "${STAGING}.tar.gz" "$STAGING"
-          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          STAGING="TextEdit-${{ steps.version.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}${{ matrix.ext }}" "$STAGING/"
-          cp README.md "$STAGING/" 2>/dev/null || true
-          cp LICENSE* "$STAGING/" 2>/dev/null || true
-          7z a "${STAGING}.zip" "$STAGING"
-          echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Build and attach bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: ${{ matrix.target }}
-          path: ${{ env.ASSET }}
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # 3. Create GitHub Release and attach all artifacts
-  # ---------------------------------------------------------------------------
-  release:
-    name: Create Release
-    needs: build
-    # Run even if some cross-compiled builds failed
-    if: always() && needs.build.result != 'failure'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Generate release notes
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          cat > release_notes.md << EOF
-          ## TextEdit v${VERSION}
-
-          Portable, single-binary text editor — a Notepad++ clone written in Rust.
-          No installation required: download, extract, and run.
-
-          ### Downloads
-
-          | Platform | Architecture | File |
-          |----------|-------------|------|
-          | Windows | x86_64 | \`TextEdit-${VERSION}-x86_64-pc-windows-msvc.zip\` |
-          | Windows | ARM64 | \`TextEdit-${VERSION}-aarch64-pc-windows-msvc.zip\` |
-          | Linux | x86_64 | \`TextEdit-${VERSION}-x86_64-unknown-linux-gnu.tar.gz\` |
-          | Linux | ARM64 | \`TextEdit-${VERSION}-aarch64-unknown-linux-gnu.tar.gz\` |
-          | macOS | Intel | \`TextEdit-${VERSION}-x86_64-apple-darwin.tar.gz\` |
-          | macOS | Apple Silicon | \`TextEdit-${VERSION}-aarch64-apple-darwin.tar.gz\` |
-
-          > Some targets may be absent if cross-compilation was not possible for this release.
-
-          ### Linux runtime dependencies
-
-          \`\`\`bash
-          sudo apt install libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libgl1 libgtk-3-0
-          \`\`\`
-
-          ### Usage
-
-          \`\`\`bash
-          # Open files from the command line
-          ./rust-notepad file1.txt file2.rs
-
-          # Or just double-click / launch without arguments
-          ./rust-notepad
-          \`\`\`
-          EOF
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: release_notes.md
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: artifacts/**/*
-          fail_on_unmatched_files: false
+          tagName: ${{ github.ref_name }}
+          releaseName: "RustNotepad ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install."
+          releaseDraft: true
+          prerelease: false

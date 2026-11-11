@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Permissions for the main RustNotepad window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "dialog:default"
+  ]
+}

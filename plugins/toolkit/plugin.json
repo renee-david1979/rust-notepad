@@ -1,0 +1,15 @@
+{
+  "name": "toolkit",
+  "version": "1.0.0",
+  "description": "Sample RustNotepad plugin: text statistics, JSON/XML validation and JSON formatting.",
+  "command": ["python3", "${pluginDir}/toolkit.py"],
+  "capabilities": [
+    "host.ping",
+    "text.word_count",
+    "text.validate_json",
+    "text.validate_xml",
+    "text.format_json",
+    "text.echo"
+  ],
+  "timeout_ms": 5000
+}

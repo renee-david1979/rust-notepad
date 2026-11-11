@@ -1,25 +1,8 @@
-[package]
-name = "rust-notepad"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = ["src-tauri"]
+resolver = "2"
 
-[dependencies]
-eframe = { version = "0.33", features = ["wgpu"] }
-egui = "0.33"
-egui_extras = { version = "0.33", features = ["syntect"] }
-rfd = "0.14"
-anyhow = "1.0"
-log = "0.4"
-env_logger = "0.11"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-quick-xml = { version = "0.36", features = ["serialize"] }
-encoding_rs = "0.8"
-syntect = "5"
-regex = "1"
-clap = { version = "4", features = ["derive"] }
-chrono = "0.4"
-notify = "6"
-
-[dev-dependencies]
-tempfile = "3.10"
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

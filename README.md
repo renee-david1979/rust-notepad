@@ -1,161 +1,106 @@
-# Rust Notepad (Notepad++-like)
+# RustNotepad
 
-A cross-platform desktop editor written in Rust. This project is best approached as a **Notepad++-like editor** rather than a strict clone, with Rust handling native app logic and a mature editor engine handling advanced text editing UX.
+A serious Notepad++-style desktop editor: **Tauri 2** shell, **Monaco
+Editor** as the editing surface, and a **process-based plugin host**
+(JSON-RPC 2.0 over stdio — plugins are external programs in any language).
 
-## Recommended stack
+## What works today
 
-- **Tauri** for desktop shell + packaging (Windows/macOS/Linux).
-- **Rust backend** for file I/O, file watching, session restore, settings, plugin host, and native integrations.
-- **Monaco Editor** or **CodeMirror 6** for the editing surface (syntax highlighting, search UX, folding, multi-language support, tabs workflow).
+- **Multi-tab editing** — one Monaco model per document, dirty markers,
+  close / close-others / close-saved / close-all, per-tab undo & scroll state
+- **Files** — New / Open / Save / Save As / Reload from Disk, native dialogs,
+  recent-files menu, encoding-aware round-trips: UTF-8, UTF-8 BOM,
+  UTF-16 LE/BE (with BOM), Windows-1252; EOL detection (LF/CRLF/CR) kept
+  across saves and switchable per file
+- **External change detection** — directory watching (survives atomic
+  save-and-replace edits); clean files auto-reload, dirty files get a
+  Reload / Overwrite / Dismiss banner
+- **Syntax highlighting** — Monaco's full language set (60+ languages),
+  extension + shebang detection, per-file language override in the status bar
+- **Find / Replace** — Notepad++-style docked panel: find next/prev,
+  replace, replace-all, replace-all-in-open-tabs, find-all-in-open-tabs,
+  find-in-files (backend search with directory/extension filters),
+  match case / whole word / regex (with `$1` group expansion)
+- **Session persistence** — open tabs (including unsaved untitled buffers),
+  active tab, recent files and all settings survive restarts
+- **Settings & themes** — dark/light themes, font zoom, word wrap, line
+  numbers, whitespace rendering, minimap, tab size, auto-indent
+- **Plugins** — external processes speaking JSON-RPC over stdio, discovered
+  from plugin directories, capability-gated, timeout-protected (a hung
+  plugin is killed, never the editor). See [`docs/PLUGIN_PROTOCOL.md`](docs/PLUGIN_PROTOCOL.md).
+  A bundled Python sample plugin (`plugins/toolkit/`) provides word counts,
+  JSON/XML validation and JSON formatting, and doubles as the protocol's
+  reference implementation and test fixture.
+- **Status bar** — line/col, selection length, encoding, EOL, language,
+  tab size, file size — encoding/EOL/language switchable in place
 
-## Why this approach
+## Stack
 
-Pure Rust GUI stacks like `egui`/`iced` can build editors, but recreating a full code-editing experience from scratch is costly (selection model, IME behavior, performance on large files, advanced search UX, language tooling integration).
+| Layer | Choice |
+| --- | --- |
+| Desktop shell & packaging | Tauri 2 (Rust) |
+| Editing surface | Monaco Editor (TypeScript, Vite) |
+| Backend services | Rust: file I/O + encodings, watcher, session, search, plugin host |
+| Plugin host | One process per plugin, JSON-RPC 2.0 lines over stdin/stdout |
 
-Using Rust + Tauri + Monaco/CodeMirror gets you to a production-quality Notepad++-style experience much faster.
+## Build & run
 
-## Feature feasibility
+Prerequisites: Rust (1.77+), Node 20+, and on macOS the Xcode command line
+tools (Tauri needs the system webview toolchain).
 
-The following feature set is realistic and a good fit for this architecture:
+```bash
+npm install                 # frontend dependencies + Tauri CLI
+npm run tauri dev           # run the app in dev mode (Vite + hot reload)
+npm run tauri build         # produce a .app and .dmg
+```
 
-- Multi-tab editor
-- Close all / close others / close saved
-- External change detection with reload prompt or auto-reload
-- Syntax highlighting for many languages
-- JSON/XML support
-- Find / find-all / replace / replace-all
-- Plugins/extensions
-- Cross-platform packaging
+Tests and checks:
 
-## Suggested architecture
+```bash
+cd src-tauri
+cargo test --all-targets    # unit tests + plugin-host e2e (spawns real processes)
+cargo fmt --all -- --check
+cargo clippy -- -D warnings
 
-### 1) App shell
+cd ..
+npm run build               # tsc --noEmit + vite production build
+```
 
-- Tauri application shell
-- Rust commands exposed to frontend
-- Native menus, file dialogs, recent files, window state
+The plugin-host integration tests spawn real child processes (the bundled
+Python plugin plus deliberately misbehaving plugins) and verify the JSON-RPC
+round trip, capability gating, timeout kills and crash recovery. They skip
+politely when `python3` is unavailable.
 
-### 2) Editor core
+## Project layout
 
-**Frontend editor engine**
-- Monaco for stronger IDE-like defaults
-- CodeMirror 6 for lighter, highly composable behavior
+```
+frontend/               TypeScript UI (Monaco, tabs, find panel, menus)
+  src/main.ts           wiring: actions, shortcuts, session, events
+  src/tabs.ts           tab/model manager
+  src/find.ts           find/replace controller
+plugins/toolkit/        sample plugin (Python, stdlib only)
+docs/PLUGIN_PROTOCOL.md plugin protocol specification
+docs/                   PRD, implementation plan, original stack blueprint
+src-tauri/
+  src/encoding.rs       encoding & EOL detection + round-trip file I/O
+  src/search.rs         find-in-tabs + find-in-files
+  src/plugins/          manifest loading, child-process transport, RPC host,
+                        discovery/lifecycle manager
+  src/watcher.rs        external change detection
+  src/commands.rs       Tauri IPC surface
+  tests/                integration tests (real subprocess plugin e2e)
+```
 
-**Rust backend services**
-- File I/O
-- File-watch reload logic
-- Session persistence
-- Plugin discovery/execution
-- Search across tabs/folders
+## Installing plugins
 
-### 3) Tab/document model
+Drop a directory containing a `plugin.json` into the app's `plugins/`
+directory (see `docs/PLUGIN_PROTOCOL.md` for discovery paths and the wire
+protocol), then use **Tools → Reload Plugins**. Run a capability on the
+active document from **Tools → (plugin) → (capability)** or the Plugins
+panel.
 
-Each tab should track:
+## Roadmap (from the PRD, not yet built)
 
-- file path
-- dirty state
-- last modified timestamp/hash
-- encoding
-- language mode
-- cursor/selection state
-
-### 4) External change handling
-
-Use Rust file watching (`notify` crate):
-
-- If tab is clean: auto reload
-- If dirty: show reload/keep edits prompt
-- Optional policy: always reload if unchanged in editor
-
-### 5) Syntax and language support
-
-Two paths:
-
-- **Monaco/CodeMirror path**: strongest out-of-the-box language + search UX.
-- **Pure Rust path**: `syntect` (+ optional `tree-sitter`) for highlighting/parsing, with more custom editor work required.
-
-## Plugin model recommendation
-
-Prefer cross-platform, safer plugin boundaries over native DLL-style plugins.
-
-### Option A: process-based plugins (recommended)
-
-- Plugin executable per extension
-- JSON-RPC over stdin/stdout or local sockets
-- Works well with Tauri command/event bridge
-
-### Option B: WASM plugins
-
-Good for text transforms, formatting, validation helpers.
-
-### Option C: dynamic libraries
-
-Possible but not ideal initially due to ABI/versioning/security complexity.
-
-## JSON/XML extension scope
-
-Treat JSON/XML support as:
-
-- syntax highlighting
-- format/minify
-- validation
-- optional tree view and query helpers (XPath/JSONPath)
-
-Example plugin commands:
-
-- Format JSON
-- Validate JSON
-- Pretty XML
-- Validate XML
-- Convert XML ↔ JSON
-
-## Search model
-
-Support search at three scopes:
-
-- current tab
-- all open tabs
-- folder/project
-
-Implementation split:
-
-- current tab search in editor engine
-- multi-file search in Rust backend (literal/regex)
-- structured results grouped by file/line
-
-## Roadmap
-
-### Phase 1 (MVP)
-
-- Open/save/save as
-- Multi-tab + dirty markers
-- Close/close all/close others
-- Syntax highlighting
-- Current-tab find/replace
-- External-change auto-reload flow
-
-### Phase 2
-
-- Find in open tabs
-- Session restore
-- Recent files
-- JSON/XML formatting + validation
-- Theme and keybinding customization
-
-### Phase 3
-
-- Plugin SDK
-- Project-wide search
-- Split panes
-- Diff view
-- Command palette/macros
-
-## Bottom line
-
-**Rust is an excellent choice** for this project.
-
-For a serious Notepad++-style result, the strongest path is:
-
-**Rust + Tauri + Monaco/CodeMirror + process-based plugin host**.
-
-That delivers cross-platform support and advanced editing behavior without rebuilding the hardest parts of the editor from first principles.
+Macro record/playback, split view, function list / document map, plugin
+manager & marketplace, hex viewer, diff viewer, UDL editor, i18n. The
+original PRD and implementation plan live in `docs/`.
