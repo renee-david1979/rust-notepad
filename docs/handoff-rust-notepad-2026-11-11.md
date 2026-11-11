@@ -2,11 +2,12 @@
 
 **Date:** 2026-11-11 · **Status: IMPLEMENTED AND VERIFIED through v0.2.0
 scope plus the three nice-to-haves (file drag-drop, resizable split
-separator, tab reordering — commit `91c3847`).**
-This is not an unexecuted plan — the app is built, tested (51/51), bundled,
-and live-verified in the running macOS app. The remaining items below are
-roadmap/optional work plus decisions only the user can make. Every fact
-below is a snapshot: re-verify before acting.
+separator, tab reordering — commit `91c3847`), the follow-ups and the
+v0.2.0 release run (commits `fe90eaa`, `666c386`).**
+This is not an unexecuted plan — the app is built, tested (52 Rust + 11
+node tests), bundled, and live-verified in the running macOS app. The
+remaining items below are roadmap/optional work plus decisions only the
+user can make. Every fact below is a snapshot: re-verify before acting.
 
 **Resume procedure:** read sections 1–2 (locks), then verify section 3
 facts live, then pick tasks from section 5. Never present anything from
@@ -61,6 +62,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets        # includes real-subprocess plugin e2e (needs python3)
 cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
+npm test          # frontend unit tests (tsc + node --test)
 ```
 
 ## 3. Live facts (snapshot 2026-11-11 — RE-VERIFY each)
@@ -68,10 +70,11 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 | Fact | Value | Re-verify with |
 | --- | --- | --- |
 | Repo | `~/Projects/rust-notepad`, branch `rebuild` (the rebuild work), clean tree; local `main` = upstream snapshot (`3fb872d`) | `git -C ~/Projects/rust-notepad status` |
-| History | rebuild = all commits after upstream tip `3fb872d` (10 at last count) | `git log --oneline 3fb872d..HEAD` |
+| History | rebuild = all commits after upstream tip `3fb872d` (13 at last count) | `git log --oneline 3fb872d..HEAD` |
 | Pushed? | **Pushed to the fork `renee-david1979/rust-notepad`** (git remote `fork`): branch `rebuild` = the rebuild work (verified against `git rev-parse HEAD`); fork `main` = upstream tip `3fb872d`. Upstream `smartpcr/rust-notepad` (remote `origin`) is owned by Xiaodong Li (GitHub `smartpcr`, the original author) — read-only for us; he can pull from the fork if he wants the work upstream. | `git ls-remote fork main rebuild` |
-| Tests | 51/51 green (43 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) | gate commands above |
+| Tests | 52/52 Rust green (44 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) + 11 node unit tests (`npm test`: tsc type-check + `node --test`) | gate commands above + `npm test` |
 | Bundles | `target/release/bundle/macos/RustNotepad.app` (9.50 MiB), `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` (5.89 MB file on disk) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npm run tauri build`) |
+| Release | tag `v0.2.0` on `666c386`, pushed to `fork`; Release workflow green on all 3 OS legs (run `43094512673`); **DRAFT GitHub release with 7 assets** (dmg, app.tar.gz, deb, rpm, AppImage, msi, exe) — **publish manually** on the fork's Releases page. `gh release` CANNOT see it: the fine-grained PAT lacks Contents scope (drafts invisible; `POST /releases` = 403). Verify via run logs ("Found draft release with tag v0.2.0") or the owner's browser | release workflow logs / owner's browser |
 | Toolchain | rustc 1.96.0, node 26.13.0, npm 12.2.2, full Xcode at `/Applications/Xcode.app` | `rustc --version; node --version` |
 | Frontend pins | monaco-editor 0.57.0, vite 8.3.8, typescript 7.0.2, @tauri-apps/api 2.12.4 | `package.json` + `npm ls` |
 | npm audit | 0 vulnerabilities (with dompurify override) | `npm audit --audit-level=high` |
@@ -110,6 +113,9 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
   text.echo. Test fixture for the e2e suite.
 - `docs/PLUGIN_PROTOCOL.md`, `README.md`, `CLAUDE.md`, `.github/workflows/ci.yml`.
 - Build: `npm install && npm run tauri dev` / `npm run tauri build`.
+- `frontend/tests/tabs.test.ts` + `tsconfig.test.json` — `TabManager`
+  unit tests (reorder, untitled naming) via `npm test`; mocked Monaco
+  (see the `mock.module` pitfall in section 6).
 
 ## 5. Remaining tasks (IN ORDER; each self-contained)
 
@@ -119,14 +125,23 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
    author Xiaodong Li and is READ-ONLY for us: never push to `origin`
    unless he grants `renee-david1979` write access first. Routine push
    command: `git push fork rebuild`.
-2. **User decision — cut a release?** `.github/workflows/release.yml` is
-   the standard `tauri-apps/tauri-action@v0` template and is UNVERIFIED —
-   it only runs on a `v*.*.*` tag push. If the user wants releases: tag on
-   `rebuild` and `git push fork v0.2.0`, watch the workflow in the FORK,
-   fix template mismatches (it builds app/dmg, msi/exe, deb/AppImage).
-3. **macOS code signing / notarization** (optional): the bundle is
-   unsigned (Gatekeeper: right-click → Open). Needs an Apple Developer ID
-   — a user-supplied credential; do not attempt without one.
+2. **Release — DONE 2026-11-11 (draft awaiting manual publish).** User
+   chose to cut a release. `release.yml` (tauri-action template) is now
+   exercised and green on all three OS legs (run `43094512673`). Mismatches
+   it needed fixed: `bundle.targets: "all"` in `tauri.conf.json` (was
+   macOS-only `["app","dmg"]` — zero bundles on Linux/Windows → "No
+   artifacts were found"), `icons/icon.ico` listed in `bundle.icon`
+   (Windows msi/nsis require a listed .ico), Node 26 pins in both
+   workflows. Tag `v0.2.0` = `666c386` on the fork (an earlier stale local
+   + remote tag pointed into upstream history at `bc16c6f` — corrected).
+   The workflow attaches 7 assets (dmg, app.tar.gz, deb, rpm, AppImage,
+   msi, exe) to a **DRAFT** release — **the user publishes it** on
+   https://github.com/renee-david1979/rust-notepad/releases (our PAT can't
+   see drafts, section 6). Future releases: tag + `git push fork <tag>`.
+3. **macOS code signing / notarization — user decision 2026-11-11: SKIP
+   (unsigned is fine).** The bundle stays unsigned (Gatekeeper:
+   right-click → Open). Revisit only with a user-supplied Apple Developer
+   ID; do not attempt without one.
 4. **Roadmap features (user picks, order advisory):** macro
    record/playback; function list / document map; plugin manager UI
    (install/enable/disable beyond current reload); hex viewer; diff-viewer
@@ -134,7 +149,7 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
    with full specs: `docs/notepad-plus-plus-clone-prd.md`. For each: extend
    the existing module named in section 4 — e.g. macros hook the
    `main.ts` action registry; a hex viewer is a new pane-mode reading via
-   `commands.rs`.
+   `commands.rs`. User decision 2026-11-11: none for now.
 5. **Nice-to-haves — DONE 2026-11-11** (`91c3847`): drag-and-drop files
    onto the window (opens into the pane under the cursor; folders skipped
    with a toast; 20-file cap); resizable split separator (persisted
@@ -146,12 +161,19 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
    (pre-existing restore bug fixed). Caveat: the Finder→window FILE drop
    could not be driven end-to-end by `computer_use` (cross-window drag;
    window-raise not consented) — worth one manual Finder drag.
-6. **Follow-ups (small):** `TabManager.reorder` unit tests via
-   `node --experimental-test-module-mocks --test` with
-   `mock.module('./monaco-setup')` (tdd-guide rec 2 — GUI-verified but
-   not automated; tabs.ts imports monaco-setup so plain `node --test`
-   cannot load it as-is); untitled tabs renumber 1/2/3 on restore
-   (cosmetic, pre-existing); `release.yml` still unverified (item 2).
+6. **Follow-ups — DONE 2026-11-11 (`fe90eaa`).** `TabManager.reorder` +
+   untitled-naming unit tests in `frontend/tests/tabs.test.ts` (11 tests;
+   `npm test` = type-check via `tsconfig.test.json` +
+   `node --experimental-test-module-mocks --test`); untitled tab titles
+   now persist in the session (`SavedTab.title`, serde-default tolerant)
+   so names survive restarts instead of being renumbered 1/2/3, and
+   `createUntitled` numbering is collision-free (next free "Untitled N",
+   safe integers only). NOT live-GUI-verified (unit-tested only). ECC
+   reviews: code-reviewer, rust-reviewer, typescript-reviewer all
+   APPROVE WITH NITS, all nits addressed (tests type-checked + in CI,
+   restore routes saved titles through `createUntitled`'s title param).
+   The rec-2 plan was corrected on the way: see the `mock.module` pitfall
+   in section 6.
 
 ## 6. Constraints and pitfalls (hard-won, specific)
 
@@ -193,3 +215,31 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
   explicit user consent. For pixel-exact hit targets (e.g. the 5 px
   separator strip), scan the capture with PIL from `~/crawl4ai-venv`
   rather than trusting vision estimates.
+- **Node's `mock.module` cannot resolve extensionless specifiers** (its
+  loader resolves like a normal ESM import — `mock.module('./monaco-setup')`
+  fails `ERR_MODULE_NOT_FOUND`). Mocked modules must be imported with an
+  explicit `.ts` extension (see `tabs.ts` import) plus
+  `allowImportingTsExtensions` in tsconfig. The mock option is `exports`
+  (`namedExports` is deprecated). Requires Node ≥ 23.6 (type stripping) —
+  `package.json` `engines` says so; CI/release workflows pin Node 26.
+- **A fork runs NO workflows until Actions is activated on the fork**
+  ("Workflows don't run in forked repositories by default" — docs.github
+  events-that-trigger-workflows), even though `GET /actions/permissions`
+  already reports `enabled: true`. Symptom: tag pushes create zero runs.
+  Fix: `gh api -X PUT repos/<owner>/<repo>/actions/permissions -F
+  enabled=true -f allowed_actions=all`, then delete + re-push the tag
+  (a force-updated existing tag did not fire a push event).
+- **The fine-grained PAT has Administration but NOT Contents scope.**
+  `gh release` shows empty/"not found" for drafts and `POST /releases` is
+  403 ("Resource not accessible by personal access token") — that does
+  NOT mean a release is missing. The workflow's `GITHUB_TOKEN`
+  (contents: write) manages releases; verify via its logs ("Found draft
+  release with tag ...") or the owner's browser.
+- **Cross-platform release bundles need `bundle.targets: "all"`** in
+  `tauri.conf.json` (Tauri filters by platform automatically), and
+  Windows bundling fails ("Couldn't find a .ico icon") unless
+  `icons/icon.ico` is listed in `bundle.icon` — the bundler only
+  considers listed icons even when the file exists.
+- **A macOS runner job can sit queued ~15 min and get auto-cancelled with
+  zero steps** (seen once; an identical re-run scheduled fine). Re-run or
+  re-push the tag before suspecting the workflow.
