@@ -68,7 +68,7 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 | Fact | Value | Re-verify with |
 | --- | --- | --- |
 | Repo | `~/Projects/rust-notepad`, branch `rebuild` (the rebuild work), clean tree; local `main` = upstream snapshot (`3fb872d`) | `git -C ~/Projects/rust-notepad status` |
-| History | 48 commits total; rebuild = 9 commits on top of upstream 39 (`bcbf3d0` onwards) | `git log --oneline` |
+| History | rebuild = all commits after upstream tip `3fb872d` (10 at last count) | `git log --oneline 3fb872d..HEAD` |
 | Pushed? | **Pushed to the fork `renee-david1979/rust-notepad`** (git remote `fork`): branch `rebuild` = the rebuild work (verified against `git rev-parse HEAD`); fork `main` = upstream tip `3fb872d`. Upstream `smartpcr/rust-notepad` (remote `origin`) is owned by Xiaodong Li (GitHub `smartpcr`, the original author) — read-only for us; he can pull from the fork if he wants the work upstream. | `git ls-remote fork main rebuild` |
 | Tests | 51/51 green (43 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) | gate commands above |
 | Bundles | `target/release/bundle/macos/RustNotepad.app` (9.50 MiB), `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` (5.89 MB file on disk) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npm run tauri build`) |
@@ -77,7 +77,7 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 | npm audit | 0 vulnerabilities (with dompurify override) | `npm audit --audit-level=high` |
 | Session file | `~/Library/Application Support/com.smartpcr.rust-notepad/session.json` (includes `split_ratio` for split widths) | `cat` it |
 | App ID / version | `com.smartpcr.rust-notepad`, 0.2.0 | `src-tauri/tauri.conf.json` |
-| Live UI verified | split view, diff view (saved-vs-buffer, red/green), plugin `text.word_count` round trip, draft restore + dirty dot — all in the running bundle via computer_use captures | relaunch app + `computer_use` capture |
+| Live UI verified | split view, diff view (saved-vs-buffer, red/green), plugin `text.word_count` round trip, draft restore + dirty dot, tab drag reorder (within-pane + cross-pane drop), split-separator resize, `split_ratio` + tab-order restore after restart — all real mouse-driven checks in the running bundle via `computer_use`. NOT manually checked yet: Finder→window file drop (tool can't drive cross-window drags) | relaunch app + `computer_use` capture |
 
 ## 4. Existing machinery to build on (exact paths)
 
@@ -113,15 +113,17 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 
 ## 5. Remaining tasks (IN ORDER; each self-contained)
 
-1. **User decision — push to GitHub?** `git push` to
-   `github.com/smartpcr/rust-notepad` (origin) has NOT been done. User
-   policy (memory): push via SSH to own repos is fine; no
-   issues/comments/PRs on external repos. Ask before pushing.
+1. **Push — DONE (fork model), do not re-ask.** The work lives on the
+   fork `renee-david1979/rust-notepad`, branch `rebuild` (remote `fork`).
+   Upstream `origin` (`smartpcr/rust-notepad`) belongs to the original
+   author Xiaodong Li and is READ-ONLY for us: never push to `origin`
+   unless he grants `renee-david1979` write access first. Routine push
+   command: `git push fork rebuild`.
 2. **User decision — cut a release?** `.github/workflows/release.yml` is
    the standard `tauri-apps/tauri-action@v0` template and is UNVERIFIED —
-   it only runs on a `v*.*.*` tag push. If the user wants releases: push a
-   tag `v0.2.0`, watch the workflow, fix template mismatches (it builds
-   app/dmg, msi/exe, deb/AppImage).
+   it only runs on a `v*.*.*` tag push. If the user wants releases: tag on
+   `rebuild` and `git push fork v0.2.0`, watch the workflow in the FORK,
+   fix template mismatches (it builds app/dmg, msi/exe, deb/AppImage).
 3. **macOS code signing / notarization** (optional): the bundle is
    unsigned (Gatekeeper: right-click → Open). Needs an Apple Developer ID
    — a user-supplied credential; do not attempt without one.
