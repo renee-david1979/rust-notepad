@@ -65,6 +65,11 @@ pub fn plugin_dirs(app: &tauri::AppHandle, config_dir: &std::path::Path) -> Vec<
         dirs.push(PathBuf::from(manifest_dir).join("..").join("plugins"));
     }
     dirs.retain(|d| d.is_dir());
+    // Normalize `..`/`.` components so plugin dirs read cleanly in the UI.
+    dirs = dirs
+        .into_iter()
+        .map(|d| d.canonicalize().unwrap_or(d))
+        .collect();
     dirs.sort();
     dirs.dedup();
     dirs
