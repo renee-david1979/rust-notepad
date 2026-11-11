@@ -967,6 +967,11 @@ async function start(): Promise<void> {
       }
     } else {
       const tab = tabs.createUntitled(saved.content ?? "");
+      if (saved.content) {
+        // A restored untitled buffer is unsaved work: keep it dirty so
+        // closing it prompts instead of silently dropping the draft.
+        tab.savedContent = "";
+      }
       tab.cursorLine = saved.cursor_line || 1;
       tab.cursorColumn = saved.cursor_column || 1;
     }
@@ -989,6 +994,9 @@ async function start(): Promise<void> {
     editor.revealLineInCenter(position.lineNumber, monaco.editor.ScrollType.Smooth);
     editor.focus();
   }
+  // Restored drafts flip dirty state after their tab was rendered.
+  renderTabs();
+  updateWindowTitle();
 
   await syncWatch();
 
