@@ -68,8 +68,8 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 | Fact | Value | Re-verify with |
 | --- | --- | --- |
 | Repo | `~/Projects/rust-notepad`, branch `main`, clean tree | `git -C ~/Projects/rust-notepad status` |
-| History | 46 commits total; rebuild = 7 commits on top of upstream 39 (`bcbf3d0` → `91c3847`) | `git log --oneline` |
-| Pushed? | **NOT pushed — and credential-blocked**: every local GitHub identity (SSH/keychain = `renee-david1979`, `gh` = `rami-daoud` pull-only) lacks write access to `smartpcr/rust-notepad`. Needs a GitHub-side grant (collaborator or `smartpcr` credentials). | `git log origin/main..HEAD`; `gh api repos/smartpcr/rust-notepad --jq .permissions` |
+| History | 48 commits total; rebuild = 9 commits on top of upstream 39 (`bcbf3d0` onwards) | `git log --oneline` |
+| Pushed? | **Pushed to the fork `renee-david1979/rust-notepad`** (git remote `fork`) — every local commit pushed, remote head verified against `git rev-parse HEAD`. Upstream `smartpcr/rust-notepad` (remote `origin`) is owned by an account the user does not control and stays read-only — the owner can pull from the fork if they want the work upstream. | `git ls-remote fork main` |
 | Tests | 51/51 green (43 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) | gate commands above |
 | Bundles | `target/release/bundle/macos/RustNotepad.app` (9.50 MiB), `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` (5.89 MB file on disk) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npm run tauri build`) |
 | Toolchain | rustc 1.96.0, node 26.13.0, npm 12.2.2, full Xcode at `/Applications/Xcode.app` | `rustc --version; node --version` |
