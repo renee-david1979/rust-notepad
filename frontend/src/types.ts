@@ -20,6 +20,8 @@ export interface SavePayload {
 export interface SavedTab {
   path: string | null;
   content: string | null;
+  cursor_line: number;
+  cursor_column: number;
 }
 
 export interface PersistedState {
@@ -47,6 +49,9 @@ export interface SearchOptions {
   include_extensions: string[];
   exclude_dirs: string[];
   max_results: number;
+  match_case: boolean;
+  whole_word: boolean;
+  use_regex: boolean;
 }
 
 export interface PluginInfo {

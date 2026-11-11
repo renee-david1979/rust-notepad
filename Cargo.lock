@@ -2715,6 +2715,7 @@ version = "0.2.0"
 dependencies = [
  "encoding_rs",
  "notify",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

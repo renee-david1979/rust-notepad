@@ -13,6 +13,8 @@ export interface Tab {
   size: number;
   mtimeMs: number;
   viewState: monaco.editor.ICodeEditorViewState | null;
+  cursorLine: number;
+  cursorColumn: number;
 }
 
 /**
@@ -62,6 +64,8 @@ export class TabManager {
       size: initialContent.length,
       mtimeMs: 0,
       viewState: null,
+      cursorLine: 1,
+      cursorColumn: 1,
     };
     this.tabs.push(tab);
     this.activate(tab.id);
@@ -92,6 +96,8 @@ export class TabManager {
       size: payload.size,
       mtimeMs: payload.mtime_ms,
       viewState: null,
+      cursorLine: 1,
+      cursorColumn: 1,
     };
     this.tabs.push(tab);
     this.activate(tab.id);
@@ -99,7 +105,7 @@ export class TabManager {
   }
 
   activate(id: number): void {
-    if (this.activeId === id) {
+    if (this.activeId === id || !this.byId(id)) {
       return;
     }
     this.activeId = id;

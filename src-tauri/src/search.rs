@@ -1,45 +1,20 @@
-//! Search across open tabs and across a project directory.
+//! Project-wide search (Find in Files).
+//!
+//! Matching honors the panel's toggles (match case / whole word / regex).
+//! The walk is defensive: directory symlinks are never followed (cycle
+//! guard and no read-escape outside the chosen root), and depth, scanned
+//! file count and per-file size are all capped.
 
 use std::{fs, path::Path};
 
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchHit {
-    pub tab_title: String,
-    pub line: usize,
-    pub start: usize,
-    pub matched: String,
-}
+use crate::error::{AppError, AppResult};
 
-/// Find all occurrences of `needle` across open documents
-/// (title, content) pairs.
-pub fn find_in_open_tabs(docs: &[(String, String)], needle: &str) -> Vec<SearchHit> {
-    let mut out = Vec::new();
-    if needle.is_empty() {
-        return out;
-    }
-
-    for (title, content) in docs {
-        for (line_idx, line) in content.lines().enumerate() {
-            let mut offset = 0;
-            while offset < line.len() {
-                let Some(found) = line[offset..].find(needle) else {
-                    break;
-                };
-                let start = offset + found;
-                out.push(SearchHit {
-                    tab_title: title.clone(),
-                    line: line_idx + 1,
-                    start,
-                    matched: needle.to_owned(),
-                });
-                offset = start + needle.len().max(1);
-            }
-        }
-    }
-    out
-}
+const MAX_SCAN_FILES: usize = 20_000;
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectHit {
@@ -53,6 +28,12 @@ pub struct SearchOptions {
     pub include_extensions: Vec<String>,
     pub exclude_dirs: Vec<String>,
     pub max_results: usize,
+    #[serde(default)]
+    pub match_case: bool,
+    #[serde(default)]
+    pub whole_word: bool,
+    #[serde(default)]
+    pub use_regex: bool,
 }
 
 impl Default for SearchOptions {
@@ -64,68 +45,143 @@ impl Default for SearchOptions {
                 .map(|s| (*s).to_owned())
                 .collect(),
             max_results: 500,
+            match_case: false,
+            whole_word: false,
+            use_regex: false,
         }
     }
 }
 
-/// Find `needle` in every text file under `root` (substring match,
-/// case-sensitive). Binary files and excluded directories are skipped.
-pub fn project_search(root: &Path, needle: &str, options: &SearchOptions) -> Vec<ProjectHit> {
-    let mut hits = Vec::new();
-    if needle.is_empty() {
-        return hits;
+/// A line matcher built from the search term and options. Literal terms
+/// are regex-escaped so both modes share one Unicode-aware engine.
+struct Matcher(Regex);
+
+impl Matcher {
+    fn build(needle: &str, options: &SearchOptions) -> AppResult<Self> {
+        let pattern = if options.use_regex {
+            needle.to_owned()
+        } else {
+            regex::escape(needle)
+        };
+        let pattern = if options.whole_word {
+            format!(r"\b(?:{pattern})\b")
+        } else {
+            pattern
+        };
+        let regex = RegexBuilder::new(&pattern)
+            .case_insensitive(!options.match_case)
+            .build()
+            .map_err(|err| AppError::Validation(format!("invalid search pattern: {err}")))?;
+        Ok(Matcher(regex))
     }
-    walk(root, needle, options, &mut hits);
-    hits
+
+    fn is_match(&self, line: &str) -> bool {
+        self.0.is_match(line)
+    }
 }
 
-fn walk(dir: &Path, needle: &str, options: &SearchOptions, hits: &mut Vec<ProjectHit>) {
-    if hits.len() >= options.max_results {
-        return;
+/// Find `needle` in text files under `root`. Binary files, excluded
+/// directories and symlinks are skipped.
+pub fn project_search(
+    root: &Path,
+    needle: &str,
+    options: &SearchOptions,
+) -> AppResult<Vec<ProjectHit>> {
+    if needle.is_empty() {
+        return Ok(Vec::new());
     }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+    let matcher = Matcher::build(needle, options)?;
+    let mut walker = Walker {
+        matcher: &matcher,
+        options,
+        hits: Vec::new(),
+        scanned: 0,
     };
-    for entry in entries.flatten() {
-        if hits.len() >= options.max_results {
+    walker.walk(root, 0);
+    Ok(walker.hits)
+}
+
+struct Walker<'a> {
+    matcher: &'a Matcher,
+    options: &'a SearchOptions,
+    hits: Vec<ProjectHit>,
+    scanned: usize,
+}
+
+impl Walker<'_> {
+    fn walk(&mut self, dir: &Path, depth: usize) {
+        if depth > MAX_DEPTH || self.done() {
             return;
         }
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if options.exclude_dirs.iter().any(|ex| ex == name) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if self.done() {
+                return;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            // Never follow symlinks: prevents cycles and keeps the search
+            // from reading outside the chosen root.
+            if file_type.is_symlink() {
                 continue;
             }
-            walk(&path, needle, options, hits);
-            continue;
+            let path = entry.path();
+            if file_type.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if self
+                    .options
+                    .exclude_dirs
+                    .iter()
+                    .any(|excluded| excluded == name)
+                {
+                    continue;
+                }
+                self.walk(&path, depth + 1);
+                continue;
+            }
+            if !extension_allowed(&path, self.options) {
+                continue;
+            }
+            self.scanned += 1;
+            self.scan_file(&path);
         }
-        if !extension_allowed(&path, options) {
-            continue;
+    }
+
+    fn done(&self) -> bool {
+        self.hits.len() >= self.options.max_results || self.scanned >= MAX_SCAN_FILES
+    }
+
+    fn scan_file(&mut self, path: &Path) {
+        let Ok(meta) = fs::metadata(path) else {
+            return;
+        };
+        if meta.len() > MAX_FILE_BYTES {
+            return;
         }
-        let Ok(bytes) = fs::read(&path) else {
-            continue;
+        let Ok(bytes) = fs::read(path) else {
+            return;
         };
         if bytes.contains(&0) {
-            continue; // binary
+            return; // binary
         }
         let Ok(content) = String::from_utf8(bytes) else {
-            continue;
+            return;
         };
-        let mut modified = false;
         for (line_idx, line) in content.lines().enumerate() {
-            if line.contains(needle) {
-                hits.push(ProjectHit {
+            if self.matcher.is_match(line) {
+                self.hits.push(ProjectHit {
                     file: path.display().to_string(),
                     line: line_idx + 1,
                     text: truncate(line, 240),
                 });
-                modified = true;
-                if hits.len() >= options.max_results {
+                if self.done() {
                     return;
                 }
             }
         }
-        let _ = modified;
     }
 }
 
@@ -158,26 +214,7 @@ fn truncate(line: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-
-    #[test]
-    fn search_groups_hits_across_tabs() {
-        let docs = vec![
-            ("a.txt".to_string(), "hello\nneedle".to_string()),
-            ("b.txt".to_string(), "needle needle".to_string()),
-        ];
-        let hits = find_in_open_tabs(&docs, "needle");
-        assert_eq!(hits.len(), 3);
-        assert_eq!(hits[0].tab_title, "a.txt");
-        assert_eq!(hits[0].line, 2);
-    }
-
-    #[test]
-    fn search_skips_empty_needle() {
-        assert!(find_in_open_tabs(&[("a".into(), "x".into())], "").is_empty());
-    }
 
     #[test]
     fn project_search_finds_and_excludes() {
@@ -192,12 +229,69 @@ mod tests {
             include_extensions: vec!["rs".into()],
             ..Default::default()
         };
-        let hits = project_search(dir.path(), "needle", &options);
+        let hits = project_search(dir.path(), "needle", &options).expect("search");
         assert_eq!(hits.len(), 2);
         assert!(hits[0].file.ends_with("b.rs"));
 
-        let hits_all = project_search(dir.path(), "needle", &SearchOptions::default());
+        let hits_all = project_search(dir.path(), "needle", &SearchOptions::default()).expect("s");
         assert_eq!(hits_all.len(), 3);
+    }
+
+    #[test]
+    fn case_insensitive_by_default_and_exact_when_requested() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "Needle\nneedle\nNEEDLE").expect("write");
+
+        let hits = project_search(dir.path(), "needle", &SearchOptions::default()).expect("search");
+        assert_eq!(hits.len(), 3);
+
+        let options = SearchOptions {
+            match_case: true,
+            ..Default::default()
+        };
+        let hits = project_search(dir.path(), "needle", &options).expect("search");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn whole_word_respects_boundaries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "needle\nneedles\na-needle-b").expect("write");
+
+        let options = SearchOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        let hits = project_search(dir.path(), "needle", &options).expect("search");
+        // "needles" has no boundary after; "a-needle-b" does (hyphens are
+        // non-word characters), matching standard \b semantics.
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].line, 1);
+        assert_eq!(hits[1].line, 3);
+    }
+
+    #[test]
+    fn regex_mode_matches_patterns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "foo123bar\nplain").expect("write");
+
+        let options = SearchOptions {
+            use_regex: true,
+            ..Default::default()
+        };
+        let hits = project_search(dir.path(), r"foo\d+bar", &options).expect("search");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn invalid_regex_reports_validation_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let options = SearchOptions {
+            use_regex: true,
+            ..Default::default()
+        };
+        let err = project_search(dir.path(), "([unclosed", &options).expect_err("must fail");
+        assert!(matches!(err, AppError::Validation(_)));
     }
 
     #[test]
@@ -208,20 +302,53 @@ mod tests {
             max_results: 3,
             ..Default::default()
         };
-        assert_eq!(project_search(dir.path(), "needle", &options).len(), 3);
+        assert_eq!(
+            project_search(dir.path(), "needle", &options)
+                .expect("search")
+                .len(),
+            3
+        );
     }
 
     #[test]
     fn project_search_skips_binary_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("bin.dat"), b"needle\x00needle").expect("write");
-        assert!(project_search(dir.path(), "needle", &SearchOptions::default()).is_empty());
+        assert!(
+            project_search(dir.path(), "needle", &SearchOptions::default())
+                .expect("search")
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_symlinks_are_not_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("secret.txt"), "needle").expect("write secret");
+        fs::write(dir.path().join("a.txt"), "needle").expect("write a");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).expect("symlink");
+
+        // Only the real file is hit; the symlinked dir is neither followed
+        // (cycle guard) nor read (no escape outside the root).
+        let hits = project_search(dir.path(), "needle", &SearchOptions::default()).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].file.ends_with("a.txt"));
+    }
+
+    #[test]
+    fn empty_needle_returns_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(project_search(dir.path(), "", &SearchOptions::default())
+            .expect("search")
+            .is_empty());
     }
 
     #[test]
     fn hit_serializes_to_ipc_shape() {
         let hit = ProjectHit {
-            file: PathBuf::from("/tmp/x").display().to_string(),
+            file: "/tmp/x".to_owned(),
             line: 1,
             text: "t".into(),
         };

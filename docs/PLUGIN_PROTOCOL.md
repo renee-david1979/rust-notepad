@@ -25,8 +25,9 @@ Every plugin lives in its own directory containing a `plugin.json`:
   the plugin directory.
 - `capabilities` — the JSON-RPC methods the host may call. Any request for
   a method not listed here is rejected **before** it reaches the process.
-- `timeout_ms` — per-request budget (default 5000). On timeout the host
-  kills the process and reports the plugin as unresponsive.
+- `timeout_ms` — per-request budget (default 5000, clamped to 60000; the
+  host warns at discovery when a manifest value is clamped). On timeout
+  the host kills the process and reports the plugin as unresponsive.
 
 ## Discovery
 
@@ -52,6 +53,11 @@ Use **Tools → Reload Plugins** to re-scan after installing a plugin.
 The process stays alive between requests. Requests are sent one at a time;
 responses are matched to requests by `id`. A response is either
 `{"result": ...}` or `{"error": {"code": <int>, "message": <str>}}`.
+`"result": null` is a legitimate success. Stray non-JSON stdout lines
+(e.g. a library warning) are skipped — up to 32 per request — so noise
+cannot desync the stream; a response with the wrong `id` is treated as a
+desync and the host kills the process (the next request respawns a clean
+one).
 
 ## Conventions for document methods
 

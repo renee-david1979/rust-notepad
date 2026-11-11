@@ -170,8 +170,8 @@ function zoomOut(): void {
 // Session persistence
 // ---------------------------------------------------------------------------
 
-function persistSession(): void {
-  const session: PersistedState = {
+function buildSession(): PersistedState {
+  return {
     theme: settings.theme,
     font_size: settings.font_size,
     show_line_numbers: settings.show_line_numbers,
@@ -181,13 +181,26 @@ function persistSession(): void {
     tab_size: settings.tab_size,
     auto_indent: settings.auto_indent,
     auto_reload: settings.auto_reload,
-    open_tabs: tabs.tabs.map((t) =>
-      t.path ? { path: t.path, content: null } : { path: null, content: t.model.getValue() },
-    ),
+    open_tabs: tabs.tabs.map((t) => ({
+      path: t.path,
+      // Untitled buffers always persist their content; file tabs persist
+      // a draft copy only while dirty (crash recovery for unsaved edits).
+      content: t.path && !tabs.isDirty(t) ? null : t.model.getValue(),
+      cursor_line: t.cursorLine,
+      cursor_column: t.cursorColumn,
+    })),
     active_tab: Math.max(0, tabs.tabs.findIndex((t) => t.id === tabs.activeId)),
     recent_files: recentFiles,
   };
-  void ipc.saveSession(session).catch(() => undefined);
+}
+
+function persistSession(): void {
+  void ipc.saveSession(buildSession()).catch(() => undefined);
+}
+
+async function persistSessionNow(): Promise<void> {
+  window.clearTimeout(persistTimer);
+  await ipc.saveSession(buildSession()).catch(() => undefined);
 }
 
 let persistTimer: number | undefined;
@@ -311,10 +324,9 @@ async function openFilesAction(): Promise<void> {
   }
 }
 
-async function saveTab(tab: Tab): Promise<void> {
+async function saveTab(tab: Tab): Promise<boolean> {
   if (!tab.path) {
-    await saveTabAs(tab);
-    return;
+    return saveTabAs(tab);
   }
   try {
     const payload = await ipc.saveFile(
@@ -328,15 +340,22 @@ async function saveTab(tab: Tab): Promise<void> {
     renderTabs();
     updateWindowTitle();
     dismissBannerIfFor(tab);
+    return true;
   } catch (err) {
     toast(`Save failed: ${errorMessage(err)}`);
+    return false;
   }
 }
 
-async function saveTabAs(tab: Tab): Promise<void> {
+async function saveTabAs(tab: Tab): Promise<boolean> {
   const path = await saveDialog({ defaultPath: tab.path ?? tab.title });
   if (!path) {
-    return;
+    return false;
+  }
+  const owner = tabs.byPath(path);
+  if (owner && owner.id !== tab.id) {
+    toast(`${basename(path)} is already open in another tab — close or save that tab first.`);
+    return false;
   }
   try {
     const payload = await ipc.saveFile(
@@ -352,8 +371,10 @@ async function saveTabAs(tab: Tab): Promise<void> {
     renderTabs();
     updateWindowTitle();
     void syncWatch();
+    return true;
   } catch (err) {
     toast(`Save failed: ${errorMessage(err)}`);
+    return false;
   }
 }
 
@@ -370,17 +391,20 @@ async function saveAll(): Promise<void> {
   }
 }
 
-async function closeTab(tab: Tab): Promise<void> {
+async function closeTab(tab: Tab): Promise<boolean> {
   if (tabs.isDirty(tab)) {
     const choice = await confirmClose(tab);
     if (choice === "cancel") {
-      return;
+      return false;
     }
-    if (choice === "save") {
-      await saveTab(tab);
+    // Never destroy work the user asked to keep: if the save fails or the
+    // Save As dialog is cancelled, the tab stays open.
+    if (choice === "save" && !(await saveTab(tab))) {
+      return false;
     }
   }
   tabs.close(tab.id);
+  return true;
 }
 
 async function closeActive(): Promise<void> {
@@ -390,9 +414,23 @@ async function closeActive(): Promise<void> {
   }
 }
 
+async function closeOthers(): Promise<void> {
+  const active = tabs.active();
+  if (!active) {
+    return;
+  }
+  for (const tab of [...tabs.tabs]) {
+    if (tab.id !== active.id && !(await closeTab(tab))) {
+      break;
+    }
+  }
+}
+
 async function closeAllTabs(): Promise<void> {
   for (const tab of [...tabs.tabs]) {
-    await closeTab(tab);
+    if (!(await closeTab(tab))) {
+      break;
+    }
   }
 }
 
@@ -523,12 +561,7 @@ function fileMenuItems(): MenuItem[] {
     { label: "Close Tab", shortcut: "⌘W", action: () => void closeActive() },
     {
       label: "Close Others",
-      action: () => {
-        const tab = tabs.active();
-        if (tab) {
-          tabs.closeOthers(tab.id);
-        }
-      },
+      action: () => void closeOthers(),
     },
     { label: "Close Saved", action: () => tabs.closeSaved() },
     { label: "Close All", action: () => void closeAllTabs() },
@@ -876,7 +909,13 @@ async function start(): Promise<void> {
   wireKeyboard();
 
   editor.onDidChangeCursorSelection(() => {
-    statusBar.update(tabs.active(), cursorInfo());
+    const tab = tabs.active();
+    const info = cursorInfo();
+    if (tab) {
+      tab.cursorLine = info.lineNumber;
+      tab.cursorColumn = info.column;
+    }
+    statusBar.update(tab, info);
   });
   editor.onDidChangeModelContent(() => {
     renderTabs();
@@ -911,9 +950,25 @@ async function start(): Promise<void> {
 
   for (const saved of session.open_tabs ?? []) {
     if (saved.path) {
+      const before = tabs.tabs.length;
       await openPath(saved.path);
+      const tab =
+        tabs.tabs.length > before
+          ? tabs.tabs[tabs.tabs.length - 1]
+          : tabs.byPath(saved.path);
+      if (tab) {
+        // Recover unsaved draft content (crash safety): the disk content
+        // stays in savedContent so the tab remains dirty.
+        if (saved.content != null && saved.content !== tab.model.getValue()) {
+          tab.model.setValue(saved.content);
+        }
+        tab.cursorLine = saved.cursor_line || 1;
+        tab.cursorColumn = saved.cursor_column || 1;
+      }
     } else {
-      tabs.createUntitled(saved.content ?? "");
+      const tab = tabs.createUntitled(saved.content ?? "");
+      tab.cursorLine = saved.cursor_line || 1;
+      tab.cursorColumn = saved.cursor_column || 1;
     }
   }
   if (tabs.tabs.length === 0) {
@@ -923,8 +978,39 @@ async function start(): Promise<void> {
   if (active && active.id !== tabs.activeId) {
     tabs.activate(active.id);
   }
+  const activeTab = tabs.active();
+  if (activeTab) {
+    const lineCount = editor.getModel()?.getLineCount() ?? 1;
+    const position = {
+      lineNumber: Math.min(activeTab.cursorLine, lineCount),
+      column: activeTab.cursorColumn,
+    };
+    editor.setPosition(position);
+    editor.revealLineInCenter(position.lineNumber, monaco.editor.ScrollType.Smooth);
+    editor.focus();
+  }
 
   await syncWatch();
+
+  // Prompt for unsaved work on any close path (Exit menu, ⌘Q, window
+  // close) and flush the session before the window goes away.
+  const appWindow = getCurrentWindow();
+  await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    for (const tab of [...tabs.tabs]) {
+      if (tabs.isDirty(tab)) {
+        const choice = await confirmClose(tab);
+        if (choice === "cancel") {
+          return;
+        }
+        if (choice === "save" && !(await saveTab(tab))) {
+          return;
+        }
+      }
+    }
+    await persistSessionNow();
+    await appWindow.destroy();
+  });
 
   await listen<FileChangedPayload>("file-changed", (event) => {
     const tab = tabs.byPath(event.payload.path);

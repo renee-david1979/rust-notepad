@@ -3,7 +3,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use serde::Serialize;
@@ -27,7 +27,9 @@ use crate::{
 pub struct AppState {
     pub config_dir: PathBuf,
     pub plugin_dirs: Vec<PathBuf>,
-    pub plugins: Mutex<PluginManager>,
+    /// `Arc` snapshots are taken under the lock so plugin calls never hold
+    /// it for the duration of a process round-trip.
+    pub plugins: Mutex<Arc<PluginManager>>,
     pub watcher: Mutex<FileWatcher>,
 }
 
@@ -37,7 +39,7 @@ impl AppState {
         Self {
             config_dir,
             plugin_dirs,
-            plugins: Mutex::new(plugins),
+            plugins: Mutex::new(Arc::new(plugins)),
             watcher: Mutex::new(FileWatcher::new()),
         }
     }
@@ -190,28 +192,39 @@ pub async fn find_in_files(
     needle: String,
     options: SearchOptions,
 ) -> CmdResult<Vec<ProjectHit>> {
-    Ok(project_search(
-        std::path::Path::new(&root),
-        &needle,
-        &options,
-    ))
+    // The recursive walk is blocking work — keep it off the async runtime.
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        project_search(std::path::Path::new(&root), &needle, &options)
+    })
+    .await;
+    match joined {
+        Ok(Ok(hits)) => Ok(hits),
+        Ok(Err(err)) => Err(err.into()),
+        Err(_) => Err(CommandError {
+            message: "search task failed".to_owned(),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Plugins
 // ---------------------------------------------------------------------------
 
-fn plugin_status(state: &AppState) -> PluginStatus {
-    let mut plugins = lock(&state.plugins);
+fn plugin_snapshot(state: &AppState) -> Arc<PluginManager> {
+    lock(&state.plugins).clone()
+}
+
+fn plugin_status(manager: &PluginManager) -> PluginStatus {
     PluginStatus {
-        plugins: plugins.list(),
-        warnings: plugins.warnings().to_vec(),
+        plugins: manager.list(),
+        warnings: manager.warnings().to_vec(),
     }
 }
 
 #[tauri::command]
 pub fn list_plugins(state: tauri::State<AppState>) -> CmdResult<PluginStatus> {
-    Ok(plugin_status(&state))
+    let manager = plugin_snapshot(&state);
+    Ok(plugin_status(&manager))
 }
 
 #[tauri::command]
@@ -221,16 +234,26 @@ pub async fn invoke_plugin(
     method: String,
     params: Value,
 ) -> CmdResult<Value> {
-    let mut plugins = lock(&state.plugins);
-    Ok(plugins.invoke(&name, &method, params)?)
+    // Blocking process I/O runs on the blocking pool, not the async
+    // runtime; only this plugin's own lock is held during the call.
+    let manager = plugin_snapshot(&state);
+    let joined =
+        tauri::async_runtime::spawn_blocking(move || manager.invoke(&name, &method, params)).await;
+    match joined {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err.into()),
+        Err(_) => Err(CommandError {
+            message: "plugin call task failed".to_owned(),
+        }),
+    }
 }
 
 #[tauri::command]
 pub fn reload_plugins(state: tauri::State<AppState>) -> CmdResult<PluginStatus> {
-    {
-        let mut plugins = lock(&state.plugins);
-        let dirs = state.plugin_dirs.clone();
-        plugins.reload(&dirs);
-    }
-    Ok(plugin_status(&state))
+    let old = plugin_snapshot(&state);
+    old.stop_all();
+    let fresh = PluginManager::discover(&state.plugin_dirs);
+    let status = plugin_status(&fresh);
+    *lock(&state.plugins) = Arc::new(fresh);
+    Ok(status)
 }

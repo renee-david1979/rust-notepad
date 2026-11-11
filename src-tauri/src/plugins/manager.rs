@@ -3,15 +3,21 @@
 //! Discovery: each configured directory may itself contain `plugin.json`,
 //! and every subdirectory containing `plugin.json` is a plugin. Invalid
 //! entries are skipped and reported as warnings (surfaced in the UI).
+//!
+//! Each plugin host sits behind its own `Mutex`, so one slow or hung plugin
+//! call never blocks listing, reload, or other plugins.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 
-use super::host::{load_manifest, PluginHost, PluginManifest};
+use super::host::{load_manifest, PluginHost, PluginManifest, MAX_TIMEOUT};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginInfo {
@@ -24,13 +30,19 @@ pub struct PluginInfo {
 }
 
 pub struct PluginEntry {
-    pub host: PluginHost,
+    pub manifest: PluginManifest,
+    pub dir: PathBuf,
+    pub host: Arc<Mutex<PluginHost>>,
 }
 
 #[derive(Default)]
 pub struct PluginManager {
     entries: Vec<PluginEntry>,
     warnings: Vec<String>,
+}
+
+fn lock_host(host: &Arc<Mutex<PluginHost>>) -> std::sync::MutexGuard<'_, PluginHost> {
+    host.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl PluginManager {
@@ -53,11 +65,10 @@ impl PluginManager {
             }
         }
         manager.entries.sort_by(|a, b| {
-            a.host
-                .manifest()
+            a.manifest
                 .name
                 .to_lowercase()
-                .cmp(&b.host.manifest().name.to_lowercase())
+                .cmp(&b.manifest.name.to_lowercase())
         });
         manager
     }
@@ -71,7 +82,7 @@ impl PluginManager {
                 if self
                     .entries
                     .iter()
-                    .any(|e| e.host.manifest().name == manifest.name)
+                    .any(|e| e.manifest.name == manifest.name)
                 {
                     self.warnings.push(format!(
                         "duplicate plugin name '{}' in {} (skipped)",
@@ -80,8 +91,21 @@ impl PluginManager {
                     ));
                     return;
                 }
+                if manifest.timeout_clamped() {
+                    self.warnings.push(format!(
+                        "plugin '{}' requests timeout_ms={} — clamped to {} ms",
+                        manifest.name,
+                        manifest.timeout_ms,
+                        MAX_TIMEOUT.as_millis()
+                    ));
+                }
                 self.entries.push(PluginEntry {
-                    host: PluginHost::new(manifest, dir.to_path_buf()),
+                    host: Arc::new(Mutex::new(PluginHost::new(
+                        manifest.clone(),
+                        dir.to_path_buf(),
+                    ))),
+                    manifest,
+                    dir: dir.to_path_buf(),
                 });
             }
             Err(err) => {
@@ -90,18 +114,18 @@ impl PluginManager {
         }
     }
 
-    pub fn list(&mut self) -> Vec<PluginInfo> {
+    pub fn list(&self) -> Vec<PluginInfo> {
         self.entries
-            .iter_mut()
+            .iter()
             .map(|entry| {
-                let manifest: &PluginManifest = entry.host.manifest();
+                let mut host = lock_host(&entry.host);
                 PluginInfo {
-                    name: manifest.name.clone(),
-                    version: manifest.version.clone(),
-                    description: manifest.description.clone(),
-                    capabilities: manifest.capabilities.clone(),
-                    dir: entry.host.plugin_dir().display().to_string(),
-                    running: entry.host.is_running(),
+                    name: entry.manifest.name.clone(),
+                    version: entry.manifest.version.clone(),
+                    description: entry.manifest.description.clone(),
+                    capabilities: entry.manifest.capabilities.clone(),
+                    dir: entry.dir.display().to_string(),
+                    running: host.is_running(),
                 }
             })
             .collect()
@@ -111,26 +135,22 @@ impl PluginManager {
         &self.warnings
     }
 
-    /// Invoke a capability on a named plugin (lazy process start).
-    pub fn invoke(&mut self, name: &str, method: &str, params: Value) -> AppResult<Value> {
+    /// Invoke a capability on a named plugin (lazy process start). Only
+    /// this plugin's lock is held for the duration of the call.
+    pub fn invoke(&self, name: &str, method: &str, params: Value) -> AppResult<Value> {
         let entry = self
             .entries
-            .iter_mut()
-            .find(|e| e.host.manifest().name == name)
+            .iter()
+            .find(|e| e.manifest.name == name)
             .ok_or_else(|| AppError::Plugin(format!("no plugin named '{name}'")))?;
-        entry.host.invoke(method, params)
+        let mut host = lock_host(&entry.host);
+        host.invoke(method, params)
     }
 
-    pub fn stop_all(&mut self) {
-        for entry in &mut self.entries {
-            entry.host.stop();
+    pub fn stop_all(&self) {
+        for entry in &self.entries {
+            lock_host(&entry.host).stop();
         }
-    }
-
-    /// Stop all processes and re-run discovery on the same directories.
-    pub fn reload(&mut self, dirs: &[PathBuf]) {
-        self.stop_all();
-        *self = PluginManager::discover(dirs);
     }
 }
 
@@ -161,10 +181,7 @@ mod tests {
         write_plugin(root.path(), "flat", &["b"]); // plugin.json directly in root
 
         let manager = PluginManager::discover(&[root.path().to_path_buf()]);
-        let names: Vec<String> = {
-            let mut m = manager;
-            m.list().into_iter().map(|p| p.name).collect()
-        };
+        let names: Vec<String> = manager.list().into_iter().map(|p| p.name).collect();
         assert_eq!(names, vec!["alpha", "flat"]);
     }
 
@@ -192,8 +209,24 @@ mod tests {
     }
 
     #[test]
+    fn oversized_timeout_is_clamped_with_warning() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("slow");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("plugin.json"),
+            r#"{"name":"slow","version":"1","command":["x"],"capabilities":[],"timeout_ms":3600000}"#,
+        )
+        .expect("write");
+
+        let manager = PluginManager::discover(&[root.path().to_path_buf()]);
+        assert_eq!(manager.entries.len(), 1);
+        assert!(manager.warnings().iter().any(|w| w.contains("clamped")));
+    }
+
+    #[test]
     fn invoke_unknown_plugin_errors() {
-        let mut manager = PluginManager::default();
+        let manager = PluginManager::default();
         let err = manager
             .invoke("ghost", "x", Value::Null)
             .expect_err("must fail");

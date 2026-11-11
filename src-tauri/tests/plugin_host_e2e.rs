@@ -172,12 +172,97 @@ fn crashed_plugin_reports_exit_and_recovers() {
 }
 
 #[test]
+fn stray_stdout_lines_are_skipped_not_fatal() {
+    if !python3_available() {
+        eprintln!("SKIP: python3 not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("plugin.json"),
+        r#"{
+            "name": "noisy",
+            "version": "0.0.1",
+            "command": ["python3", "-c",
+                "import sys,json\nfor line in sys.stdin:\n    req=json.loads(line)\n    print('library warning on stdout')\n    print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':{'ok':True}}))\n    sys.stdout.flush()"],
+            "capabilities": ["x.call"],
+            "timeout_ms": 3000
+        }"#,
+    )
+    .expect("write manifest");
+    let manifest = load_manifest(dir.path()).expect("manifest");
+    let mut host = PluginHost::new(manifest, dir.path().to_path_buf());
+
+    // The stray line must be skipped and the real response found.
+    let result = host
+        .invoke("x.call", json!({}))
+        .expect("response found past stray line");
+    assert_eq!(result["ok"], json!(true));
+}
+
+#[test]
+fn wrong_id_response_resets_transport() {
+    if !python3_available() {
+        eprintln!("SKIP: python3 not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("plugin.json"),
+        r#"{
+            "name": "desynced",
+            "version": "0.0.1",
+            "command": ["python3", "-c",
+                "import sys,json\nfor line in sys.stdin:\n    req=json.loads(line)\n    print(json.dumps({'jsonrpc':'2.0','id':req['id']+1,'result':{}}))\n    sys.stdout.flush()"],
+            "capabilities": ["x.call"],
+            "timeout_ms": 3000
+        }"#,
+    )
+    .expect("write manifest");
+    let manifest = load_manifest(dir.path()).expect("manifest");
+    let mut host = PluginHost::new(manifest, dir.path().to_path_buf());
+
+    let err = host.invoke("x.call", json!({})).expect_err("must fail");
+    assert!(err.to_string().contains("transport reset"), "got: {err}");
+    // The desynced process was killed, so nothing wedges future calls.
+    assert!(!host.is_running());
+}
+
+#[test]
+fn null_result_is_a_successful_response() {
+    if !python3_available() {
+        eprintln!("SKIP: python3 not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("plugin.json"),
+        r#"{
+            "name": "nulls",
+            "version": "0.0.1",
+            "command": ["python3", "-c",
+                "import sys,json\nfor line in sys.stdin:\n    req=json.loads(line)\n    print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':None}))\n    sys.stdout.flush()"],
+            "capabilities": ["x.call"],
+            "timeout_ms": 3000
+        }"#,
+    )
+    .expect("write manifest");
+    let manifest = load_manifest(dir.path()).expect("manifest");
+    let mut host = PluginHost::new(manifest, dir.path().to_path_buf());
+
+    let result = host
+        .invoke("x.call", json!({}))
+        .expect("null result is success");
+    assert!(result.is_null());
+}
+
+#[test]
 fn manager_invokes_real_plugin_and_tracks_running_state() {
     if !python3_available() {
         eprintln!("SKIP: python3 not available");
         return;
     }
-    let mut manager =
+    let manager =
         PluginManager::discover(&[toolkit_dir().parent().expect("plugins dir").to_path_buf()]);
 
     let listed = manager.list();

@@ -2,6 +2,14 @@
 //! on stdin; responses come back as single-line JSON-RPC on stdout. stderr is
 //! captured (tail) for diagnostics. A request that exceeds the timeout gets
 //! the plugin process killed — a misbehaving plugin must not hang the editor.
+//!
+//! Robustness rules:
+//! - stray non-JSON stdout lines (e.g. a library warning) are skipped, not
+//!   fatal, so one stray line cannot desync the response stream;
+//! - a wrong-id response is a real desync: the process is killed and the
+//!   next request respawns a clean one;
+//! - every transport is killed on drop, so plugin processes never outlive
+//!   the editor.
 
 use std::{
     collections::VecDeque,
@@ -9,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +27,10 @@ use crate::error::{io_error, AppError, AppResult};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(5000);
+/// Upper bound for manifest-configured timeouts.
+pub const MAX_TIMEOUT: Duration = Duration::from_millis(60_000);
 const STDERR_TAIL_LINES: usize = 50;
+const MAX_STRAY_LINES: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Manifest
@@ -41,12 +52,18 @@ pub struct PluginManifest {
 }
 
 impl PluginManifest {
+    /// Effective timeout: default when unset, clamped to [`MAX_TIMEOUT`].
     pub fn timeout(&self) -> Duration {
         if self.timeout_ms == 0 {
             DEFAULT_TIMEOUT
         } else {
-            Duration::from_millis(self.timeout_ms)
+            Duration::from_millis(self.timeout_ms.min(MAX_TIMEOUT.as_millis() as u64))
         }
+    }
+
+    /// True when `timeout_ms` exceeds what the host will actually use.
+    pub fn timeout_clamped(&self) -> bool {
+        self.timeout_ms > MAX_TIMEOUT.as_millis() as u64
     }
 
     /// Expand `${pluginDir}` placeholders in the command argv.
@@ -101,6 +118,9 @@ pub struct RpcError {
 pub struct RpcResponse {
     pub jsonrpc: String,
     pub id: u64,
+    /// `"result": null` is a legitimate JSON-RPC success and is treated as
+    /// `Value::Null` (indistinguishable from absence by design); only
+    /// `error` is a failure.
     pub result: Option<Value>,
     pub error: Option<RpcError>,
 }
@@ -202,6 +222,14 @@ impl ChildProcessTransport {
     }
 }
 
+impl Drop for ChildProcessTransport {
+    fn drop(&mut self) {
+        // std::process::Child does not kill on drop; never orphan plugins.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PluginHost: capability-gated RPC against one plugin process
 // ---------------------------------------------------------------------------
@@ -254,7 +282,8 @@ impl PluginHost {
     /// Invoke `method` with `params`. Starts the process on demand.
     ///
     /// Errors: unknown capability (rejected before touching the process),
-    /// protocol errors, plugin-reported errors, timeout (process is killed).
+    /// protocol errors (transport is reset so the next call gets a clean
+    /// process), plugin-reported errors, timeout (process is killed).
     pub fn invoke(&mut self, method: &str, params: Value) -> AppResult<Value> {
         if !self.manifest.capabilities.iter().any(|c| c == method) {
             return Err(AppError::Validation(format!(
@@ -280,60 +309,91 @@ impl PluginHost {
         let transport = self.transport.as_mut().expect("transport started");
         transport.send_line(&line)?;
 
-        match transport.recv_line(self.timeout) {
-            Ok(raw) => {
-                let response: RpcResponse = serde_json::from_str(&raw).map_err(|err| {
-                    AppError::Plugin(format!(
-                        "invalid response from '{}': {err} (raw: {raw})",
-                        self.manifest.name
-                    ))
-                })?;
-                if response.id != id {
+        let deadline = Instant::now() + self.timeout;
+        let mut stray_lines = 0usize;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.timeout_error(method));
+            }
+            let raw = match transport.recv_line(remaining) {
+                Ok(raw) => raw,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(self.timeout_error(method));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let tail = transport.stderr_tail();
+                    self.kill_transport();
                     return Err(AppError::Plugin(format!(
-                        "response id mismatch from '{}' (expected {id}, got {})",
-                        self.manifest.name, response.id
+                        "'{}' exited before answering '{method}'{}",
+                        self.manifest.name,
+                        format_stderr(&tail)
                     )));
                 }
-                if let Some(error) = response.error {
-                    return Err(AppError::Plugin(format!(
-                        "{}: {} (code {})",
-                        self.manifest.name, error.message, error.code
-                    )));
+            };
+
+            let response: RpcResponse = match serde_json::from_str(&raw) {
+                Ok(response) => response,
+                Err(_) => {
+                    // Stray stdout line (library warning, log noise): skip
+                    // it and keep waiting for the real response.
+                    stray_lines += 1;
+                    if stray_lines > MAX_STRAY_LINES {
+                        let tail = transport.stderr_tail();
+                        self.kill_transport();
+                        return Err(AppError::Plugin(format!(
+                            "'{}' produced too much non-protocol output for '{method}' — transport reset{}",
+                            self.manifest.name,
+                            format_stderr(&tail)
+                        )));
+                    }
+                    continue;
                 }
-                response.result.ok_or_else(|| {
-                    AppError::Plugin(format!(
-                        "response from '{}' missing result",
-                        self.manifest.name
-                    ))
-                })
+            };
+
+            if response.id != id {
+                // Response stream is desynchronized; a clean respawn is
+                // the only reliable recovery.
+                self.kill_transport();
+                return Err(AppError::Plugin(format!(
+                    "response id mismatch from '{}' (expected {id}, got {}) — transport reset",
+                    self.manifest.name, response.id
+                )));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let tail = transport.stderr_tail();
-                if let Some(t) = self.transport.take() {
-                    t.kill();
-                }
-                Err(AppError::Timeout(format!(
-                    "'{}' did not answer '{method}' within {:?}{}",
-                    self.manifest.name,
-                    self.timeout,
-                    format_stderr(&tail)
-                )))
+
+            if let Some(error) = response.error {
+                // A well-formed error from a healthy plugin: keep the
+                // transport alive.
+                return Err(AppError::Plugin(format!(
+                    "{}: {} (code {})",
+                    self.manifest.name, error.message, error.code
+                )));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let tail = transport.stderr_tail();
-                if let Some(t) = self.transport.take() {
-                    t.kill();
-                }
-                Err(AppError::Plugin(format!(
-                    "'{}' exited before answering '{method}'{}",
-                    self.manifest.name,
-                    format_stderr(&tail)
-                )))
-            }
+            // `"result": null` and an absent result are both Null success.
+            return Ok(response.result.unwrap_or(Value::Null));
         }
     }
 
     pub fn stop(&mut self) {
+        self.kill_transport();
+    }
+
+    fn timeout_error(&mut self, method: &str) -> AppError {
+        let tail = self
+            .transport
+            .as_ref()
+            .map(|t| t.stderr_tail())
+            .unwrap_or_default();
+        self.kill_transport();
+        AppError::Timeout(format!(
+            "'{}' did not answer '{method}' within {:?}{}",
+            self.manifest.name,
+            self.timeout,
+            format_stderr(&tail)
+        ))
+    }
+
+    fn kill_transport(&mut self) {
         if let Some(t) = self.transport.take() {
             t.kill();
         }
@@ -384,11 +444,16 @@ mod tests {
     }
 
     #[test]
-    fn timeout_ms_zero_maps_to_default() {
+    fn timeout_defaults_and_clamps() {
         assert_eq!(manifest(vec![]).timeout(), DEFAULT_TIMEOUT);
         let mut m = manifest(vec![]);
         m.timeout_ms = 250;
         assert_eq!(m.timeout(), Duration::from_millis(250));
+        assert!(!m.timeout_clamped());
+
+        m.timeout_ms = u64::MAX;
+        assert_eq!(m.timeout(), MAX_TIMEOUT);
+        assert!(m.timeout_clamped());
     }
 
     #[test]

@@ -87,18 +87,29 @@ impl FileWatcher {
                 return;
             }
             for path in event.paths {
-                let Ok(canonical) = path.canonicalize() else {
-                    continue;
+                let original = {
+                    let guard = tracked_for_cb
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let canonical = path.canonicalize().ok();
+                    canonical
+                        .and_then(|c| guard.get(&c).cloned())
+                        .or_else(|| guard.values().find(|orig| **orig == path).cloned())
+                        .or_else(|| {
+                            // Removals: canonicalize fails on a deleted
+                            // path — match by parent + file name.
+                            let name = path.file_name();
+                            let parent = path.parent();
+                            guard
+                                .values()
+                                .find(|orig| orig.file_name() == name && orig.parent() == parent)
+                                .cloned()
+                        })
                 };
-                let original = tracked_for_cb
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&canonical)
-                    .cloned();
                 let Some(original) = original else {
                     continue;
                 };
-                let mtime_ms = std::fs::metadata(&canonical)
+                let mtime_ms = std::fs::metadata(&path)
                     .ok()
                     .map(|meta| encoding::mtime_ms(&meta))
                     .unwrap_or(0);

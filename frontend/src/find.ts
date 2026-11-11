@@ -185,6 +185,10 @@ export class FindController {
   }
 
   private reveal(tab: TabManager["tabs"][number], match: monaco.editor.FindMatch): void {
+    if (!this.tabs.byId(tab.id)) {
+      this.setStatus("That tab has been closed.");
+      return;
+    }
     const editor = this.getEditor();
     if (!editor || editor.getModel() !== tab.model) {
       this.tabs.activate(tab.id);
@@ -347,8 +351,11 @@ export class FindController {
     try {
       const options = {
         include_extensions: [],
-        exclude_dirs: [],
+        exclude_dirs: ["target", "node_modules", ".git", "dist", "build"],
         max_results: 500,
+        match_case: this.matchCase,
+        whole_word: this.wholeWord,
+        use_regex: this.useRegex,
       };
       const hits = await ipc.findInFiles(folder, this.query, options);
       const rows: FindResultRow[] = hits.map((hit) => ({

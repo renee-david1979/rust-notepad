@@ -11,7 +11,6 @@ use serde::Serialize;
 pub enum AppError {
     MissingFile(PathBuf),
     PermissionDenied(PathBuf),
-    InvalidEncoding(PathBuf),
     Validation(String),
     Plugin(String),
     Timeout(String),
@@ -23,9 +22,6 @@ impl fmt::Display for AppError {
             AppError::MissingFile(path) => write!(f, "file not found: {}", path.display()),
             AppError::PermissionDenied(path) => {
                 write!(f, "permission denied: {}", path.display())
-            }
-            AppError::InvalidEncoding(path) => {
-                write!(f, "could not decode file: {}", path.display())
             }
             AppError::Validation(msg) => write!(f, "{msg}"),
             AppError::Plugin(msg) => write!(f, "plugin error: {msg}"),

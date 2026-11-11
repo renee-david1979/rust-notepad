@@ -1,9 +1,6 @@
-//! Persisted settings + session state, and the recent-files LRU.
+//! Persisted settings + session state.
 
-use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -11,12 +8,32 @@ use crate::error::{io_error, AppResult};
 
 /// One restored tab. `path` is `None` for untitled buffers, whose content
 /// is persisted inline in the session file so unsaved work survives a
-/// restart.
+/// restart. File tabs persist draft content only while dirty (crash
+/// recovery for unsaved edits).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedTab {
     pub path: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default = "default_cursor")]
+    pub cursor_line: u32,
+    #[serde(default = "default_cursor")]
+    pub cursor_column: u32,
+}
+
+fn default_cursor() -> u32 {
+    1
+}
+
+impl Default for SavedTab {
+    fn default() -> Self {
+        Self {
+            path: None,
+            content: None,
+            cursor_line: 1,
+            cursor_column: 1,
+        }
+    }
 }
 
 /// Persisted application state saved to disk between sessions.
@@ -98,38 +115,6 @@ impl PersistedState {
     }
 }
 
-/// Recently opened files, most recent first, with a capacity cap.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RecentFiles {
-    cap: usize,
-    entries: VecDeque<PathBuf>,
-}
-
-impl RecentFiles {
-    pub fn new(cap: usize) -> Self {
-        Self {
-            cap,
-            entries: VecDeque::new(),
-        }
-    }
-
-    pub fn visit(&mut self, path: PathBuf) {
-        self.entries.retain(|existing| existing != &path);
-        self.entries.push_front(path);
-        while self.entries.len() > self.cap {
-            self.entries.pop_back();
-        }
-    }
-
-    pub fn prune_missing<F: Fn(&PathBuf) -> bool>(&mut self, exists: F) {
-        self.entries.retain(exists);
-    }
-
-    pub fn as_vec(&self) -> Vec<PathBuf> {
-        self.entries.iter().cloned().collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,11 +126,13 @@ mod tests {
             open_tabs: vec![
                 SavedTab {
                     path: Some("/tmp/a.txt".into()),
-                    content: None,
+                    ..Default::default()
                 },
                 SavedTab {
-                    path: None,
                     content: Some("unsaved draft".into()),
+                    cursor_line: 3,
+                    cursor_column: 7,
+                    ..Default::default()
                 },
             ],
             active_tab: 1,
@@ -187,23 +174,9 @@ mod tests {
     }
 
     #[test]
-    fn recent_files_is_lru_with_deduplication() {
-        let mut recent = RecentFiles::new(2);
-        recent.visit(PathBuf::from("a"));
-        recent.visit(PathBuf::from("b"));
-        recent.visit(PathBuf::from("a"));
-        assert_eq!(
-            recent.as_vec(),
-            vec![PathBuf::from("a"), PathBuf::from("b")]
-        );
-    }
-
-    #[test]
-    fn recent_files_prunes_missing_entries() {
-        let mut recent = RecentFiles::new(3);
-        recent.visit(PathBuf::from("a"));
-        recent.visit(PathBuf::from("b"));
-        recent.prune_missing(|p| p != &PathBuf::from("a"));
-        assert_eq!(recent.as_vec(), vec![PathBuf::from("b")]);
+    fn saved_tab_defaults_cursor_to_one() {
+        let tab = SavedTab::default();
+        assert_eq!(tab.cursor_line, 1);
+        assert_eq!(tab.cursor_column, 1);
     }
 }
