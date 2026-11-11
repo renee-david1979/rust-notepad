@@ -1,7 +1,9 @@
 # Handoff: rust-notepad (RustNotepad editor)
 
-**Date:** 2026-11-11 · **Status: IMPLEMENTED AND VERIFIED through v0.2.0 scope.**
-This is not an unexecuted plan — the app is built, tested (50/50), bundled,
+**Date:** 2026-11-11 · **Status: IMPLEMENTED AND VERIFIED through v0.2.0
+scope plus the three nice-to-haves (file drag-drop, resizable split
+separator, tab reordering — commit `91c3847`).**
+This is not an unexecuted plan — the app is built, tested (51/51), bundled,
 and live-verified in the running macOS app. The remaining items below are
 roadmap/optional work plus decisions only the user can make. Every fact
 below is a snapshot: re-verify before acting.
@@ -66,14 +68,14 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
 | Fact | Value | Re-verify with |
 | --- | --- | --- |
 | Repo | `~/Projects/rust-notepad`, branch `main`, clean tree | `git -C ~/Projects/rust-notepad status` |
-| History | 44 commits total; rebuild = 5 commits on top of upstream 39 (`bcbf3d0` → `3967240`) | `git log --oneline` |
-| Pushed? | **NOT pushed** to origin `smartpcr/rust-notepad` as of writing | `git status -sb` / `git log origin/main..HEAD` |
-| Tests | 50/50 green (42 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) | gate commands above |
+| History | 46 commits total; rebuild = 7 commits on top of upstream 39 (`bcbf3d0` → `91c3847`) | `git log --oneline` |
+| Pushed? | **NOT pushed — and credential-blocked**: every local GitHub identity (SSH/keychain = `renee-david1979`, `gh` = `rami-daoud` pull-only) lacks write access to `smartpcr/rust-notepad`. Needs a GitHub-side grant (collaborator or `smartpcr` credentials). | `git log origin/main..HEAD`; `gh api repos/smartpcr/rust-notepad --jq .permissions` |
+| Tests | 51/51 green (43 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) | gate commands above |
 | Bundles | `target/release/bundle/macos/RustNotepad.app` (9.50 MiB), `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` (5.89 MB file on disk) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npm run tauri build`) |
 | Toolchain | rustc 1.96.0, node 26.13.0, npm 12.2.2, full Xcode at `/Applications/Xcode.app` | `rustc --version; node --version` |
 | Frontend pins | monaco-editor 0.57.0, vite 8.3.8, typescript 7.0.2, @tauri-apps/api 2.12.4 | `package.json` + `npm ls` |
 | npm audit | 0 vulnerabilities (with dompurify override) | `npm audit --audit-level=high` |
-| Session file | `~/Library/Application Support/com.smartpcr.rust-notepad/session.json` | `cat` it |
+| Session file | `~/Library/Application Support/com.smartpcr.rust-notepad/session.json` (includes `split_ratio` for split widths) | `cat` it |
 | App ID / version | `com.smartpcr.rust-notepad`, 0.2.0 | `src-tauri/tauri.conf.json` |
 | Live UI verified | split view, diff view (saved-vs-buffer, red/green), plugin `text.word_count` round trip, draft restore + dirty dot — all in the running bundle via computer_use captures | relaunch app + `computer_use` capture |
 
@@ -97,6 +99,12 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
   `statusbar.ts`, `monaco-setup.ts` (workers via
   `monaco-editor/editor/editor.worker?worker` style paths — 0.57 exports
   map!), `types.ts` (IPC mirrors, snake_case).
+- `frontend/src/panes.ts` also owns the drag machinery: `startSeparatorDrag`
+  (split resize; pointer capture + pointercancel-safe), `startTabDrag`
+  (tab reorder and cross-pane drop; POINTER-based because `dragDropEnabled:
+  true` swallows DOM drag events), with `TabManager.reorder`/`placeInPane`
+  in `tabs.ts` and split widths persisted as `split_ratio: Option<f32>`
+  (serde-default tolerant) in `persistence.rs`.
 - `plugins/toolkit/` — reference plugin (Python stdlib): host.ping,
   text.word_count, text.validate_json/xml, text.format_json, text.diff,
   text.echo. Test fixture for the e2e suite.
@@ -125,10 +133,23 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
    the existing module named in section 4 — e.g. macros hook the
    `main.ts` action registry; a hex viewer is a new pane-mode reading via
    `commands.rs`.
-5. **Nice-to-have fixes** (small, safe): drag-and-drop files onto the
-   window (needs `dragDropEnabled: true` + `onDragDropEvent` handling —
-   currently disabled in `tauri.conf.json`); resizable split separator
-   (fixed 1 px now); tab reordering.
+5. **Nice-to-haves — DONE 2026-11-11** (`91c3847`): drag-and-drop files
+   onto the window (opens into the pane under the cursor; folders skipped
+   with a toast; 20-file cap); resizable split separator (persisted
+   `split_ratio`, clamped 0.15–0.85 in the frontend, stored verbatim by
+   Rust); tab reordering (within a strip, cross-pane by dropping on the
+   other strip while split). Live-verified in the bundle: reorder,
+   cross-pane drop, separator resize, and restore of ratio + order after
+   restart. Session restore now re-enables split for saved pane-2 tabs
+   (pre-existing restore bug fixed). Caveat: the Finder→window FILE drop
+   could not be driven end-to-end by `computer_use` (cross-window drag;
+   window-raise not consented) — worth one manual Finder drag.
+6. **Follow-ups (small):** `TabManager.reorder` unit tests via
+   `node --experimental-test-module-mocks --test` with
+   `mock.module('./monaco-setup')` (tdd-guide rec 2 — GUI-verified but
+   not automated; tabs.ts imports monaco-setup so plain `node --test`
+   cannot load it as-is); untitled tabs renumber 1/2/3 on restore
+   (cosmetic, pre-existing); `release.yml` still unverified (item 2).
 
 ## 6. Constraints and pitfalls (hard-won, specific)
 
@@ -161,3 +182,12 @@ cd ~/Projects/rust-notepad && npm run build   # tsc --noEmit + vite build
   used) — never poll; continue other work and read the log on completion.
 - **CLAUDE.md is a protected agent-instruction file** — edits to it were
   blocked by approval; leave as-is (its fmt/clippy rule is still accurate).
+- **`computer_use` coordinate spaces:** drag/click `coordinate=` is in
+  WINDOW SCREENSHOT pixels (1:1 with the capture image); the SOM `AX*`
+  bounds are SCREEN coordinates — screenshot y = AX y − window origin y
+  (a 54 px offset cost one missed drag). `drag` requires
+  `delivery_mode: 'foreground'` on macOS (background drag returns
+  `background_unavailable`); `focus_app` with `raise_window: true` needs
+  explicit user consent. For pixel-exact hit targets (e.g. the 5 px
+  separator strip), scan the capture with PIL from `~/crawl4ai-venv`
+  rather than trusting vision estimates.
