@@ -31,7 +31,12 @@ this file as verified system state without re-checking it.
 - **Data-loss policy is absolute:** a tab is never closed if the user asked
   to save and the save failed or the Save-As dialog was cancelled
   (`saveTab`/`saveTabAs` return booleans and every close path checks).
-  Exit/window-close prompts per dirty tab and flushes the session first.
+  Window-close prompts per dirty tab and flushes the session first.
+  KNOWN GAP (live-verified 2026-11-11): ⌘Q / app-quit exits WITHOUT the
+  per-tab prompt — the native quit path bypasses `onCloseRequested`
+  (drafts still survive via session autosave, but the prompt policy holds
+  only on the window-close path; fix candidate: handle Tauri's
+  exit-requested/menu-quit path like window close).
   Session JSON stores unsaved drafts (untitled + dirty file tabs), cursor
   position, and pane layout; restored drafts come back dirty.
 - **Split view model:** Notepad++-style — two panes, each with its own tab
@@ -168,7 +173,12 @@ npm test          # frontend unit tests (tsc + node --test)
    now persist in the session (`SavedTab.title`, serde-default tolerant)
    so names survive restarts instead of being renumbered 1/2/3, and
    `createUntitled` numbering is collision-free (next free "Untitled N",
-   safe integers only). NOT live-GUI-verified (unit-tested only). ECC
+   safe integers only). Live-verified in the bundle 2026-11-11: after
+   closing "Untitled 1" the next new tab is "Untitled 4" (no duplicate
+   names), and a restart keeps titles 2/3/4 (no 1/2/3 renumbering) with
+   drafts restored dirty and their content intact. Bonus finding: the
+   ⌘Q prompt gap in section 1 (window-close prompts correctly, per tab,
+   in order). ECC
    reviews: code-reviewer, rust-reviewer, typescript-reviewer all
    APPROVE WITH NITS, all nits addressed (tests type-checked + in CI,
    restore routes saved titles through `createUntitled`'s title param).
@@ -243,3 +253,6 @@ npm test          # frontend unit tests (tsc + node --test)
 - **A macOS runner job can sit queued ~15 min and get auto-cancelled with
   zero steps** (seen once; an identical re-run scheduled fine). Re-run or
   re-push the tag before suspecting the workflow.
+- **Before GUI-testing the bundle, `ps` for a stale instance** — `open`
+  silently focuses an existing process still running the OLD binary, and
+  the test then exercises stale code. Quit it (⌘Q) and relaunch.
