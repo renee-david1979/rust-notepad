@@ -19,9 +19,19 @@ pub struct SavedTab {
     pub cursor_line: u32,
     #[serde(default = "default_cursor")]
     pub cursor_column: u32,
+    /// Which split pane (1 or 2) this tab belongs to.
+    #[serde(default = "default_pane")]
+    pub pane: u32,
+    /// Marks the active tab within its pane.
+    #[serde(default)]
+    pub active: bool,
 }
 
 fn default_cursor() -> u32 {
+    1
+}
+
+fn default_pane() -> u32 {
     1
 }
 
@@ -32,6 +42,8 @@ impl Default for SavedTab {
             content: None,
             cursor_line: 1,
             cursor_column: 1,
+            pane: 1,
+            active: false,
         }
     }
 }
@@ -58,6 +70,9 @@ pub struct PersistedState {
     pub auto_reload: bool,
     pub open_tabs: Vec<SavedTab>,
     pub active_tab: usize,
+    /// Which split pane has keyboard focus (1 or 2).
+    #[serde(default = "default_pane")]
+    pub active_pane: u32,
     #[serde(default)]
     pub recent_files: Vec<String>,
 }
@@ -84,6 +99,7 @@ impl Default for PersistedState {
             auto_reload: true,
             open_tabs: Vec::new(),
             active_tab: 0,
+            active_pane: 1,
             recent_files: Vec::new(),
         }
     }

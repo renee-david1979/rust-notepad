@@ -52,6 +52,23 @@ def text_format_json(params):
     return {"text": json.dumps(value, indent=2, ensure_ascii=False)}
 
 
+def text_diff(params):
+    import difflib
+
+    base = params.get("base", "")
+    text = params.get("text", "")
+    base_label = params.get("base_label", "base")
+    modified_label = params.get("modified_label", "modified")
+    lines = difflib.unified_diff(
+        base.splitlines(),
+        text.splitlines(),
+        fromfile=base_label,
+        tofile=modified_label,
+        lineterm="",
+    )
+    return {"unified": "\n".join(lines)}
+
+
 def text_echo(params):
     return params
 
@@ -62,6 +79,7 @@ METHODS = {
     "text.validate_json": text_validate_json,
     "text.validate_xml": text_validate_xml,
     "text.format_json": text_format_json,
+    "text.diff": text_diff,
     "text.echo": text_echo,
 }
 

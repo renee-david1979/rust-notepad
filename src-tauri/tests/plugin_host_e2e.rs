@@ -77,6 +77,25 @@ fn toolkit_plugin_full_roundtrip() {
         .expect_err("invalid xml must fail");
     assert!(err.to_string().contains("invalid XML"));
 
+    // Diff plugin: structured unified diff from two texts.
+    let diff = host
+        .invoke(
+            "text.diff",
+            json!({"base": "a\nb\nc", "text": "a\nB\nc", "base_label": "old", "modified_label": "new"}),
+        )
+        .expect("diff");
+    let unified = diff["unified"].as_str().expect("unified diff text");
+    assert!(
+        unified.contains("--- old"),
+        "missing base header: {unified}"
+    );
+    assert!(
+        unified.contains("+++ new"),
+        "missing modified header: {unified}"
+    );
+    assert!(unified.contains("-b"), "missing removed line: {unified}");
+    assert!(unified.contains("+B"), "missing added line: {unified}");
+
     host.stop();
     assert!(!host.is_running());
 }

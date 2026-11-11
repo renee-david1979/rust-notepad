@@ -4,13 +4,15 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
+import type { DiffSpec } from "./diff";
 import { FindController } from "./find";
 import { ipc } from "./ipc";
 import { buildMenuBar, type MenuItem } from "./menus";
 import { defineThemes, monaco } from "./monaco-setup";
 import { BottomPanel, type FindResultRow } from "./panels";
+import { PaneManager } from "./panes";
 import { StatusBar, type CursorInfo } from "./statusbar";
-import { TabManager, type Tab } from "./tabs";
+import { TabManager, type PaneId, type Tab } from "./tabs";
 import {
   defaultSettings,
   type FileChangedPayload,
@@ -21,12 +23,11 @@ import {
 const tabs = new TabManager();
 let settings: PersistedState = defaultSettings();
 let recentFiles: string[] = [];
-let editor: monaco.editor.IStandaloneCodeEditor;
+let panes: PaneManager;
 let findController: FindController;
 let statusBar: StatusBar;
 let bottomPanel: BottomPanel;
 let pluginCache: PluginStatus | null = null;
-let lastActiveTabId: number | null = null;
 
 function $(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
@@ -38,6 +39,10 @@ function basename(path: string): string {
 
 function errorMessage(err: unknown): string {
   return String((err as { message?: string })?.message ?? err);
+}
+
+function activeEditor(): monaco.editor.IStandaloneCodeEditor {
+  return panes.get(tabs.activePane).editor;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +121,24 @@ function promptText(title: string, initial: string): Promise<string | null> {
   });
 }
 
+function pickTab(title: string, candidates: Tab[]): Promise<Tab | null> {
+  return new Promise((resolve) => {
+    const body = document.createElement("div");
+    for (const tab of candidates) {
+      const btn = document.createElement("button");
+      btn.textContent = tab.path ? `${tab.title} — ${tab.path}` : tab.title;
+      btn.style.cssText =
+        "display:block;width:100%;margin:4px 0;padding:6px 10px;text-align:left;";
+      btn.addEventListener("click", () => {
+        hideModal();
+        resolve(tab);
+      });
+      body.appendChild(btn);
+    }
+    showModal(title, body, [{ label: "Cancel", run: () => resolve(null) }]);
+  });
+}
+
 function confirmClose(tab: Tab): Promise<"save" | "discard" | "cancel"> {
   return new Promise((resolve) => {
     const body = document.createElement("p");
@@ -133,17 +156,24 @@ function confirmClose(tab: Tab): Promise<"save" | "discard" | "cancel"> {
 // ---------------------------------------------------------------------------
 
 function applySettings(): void {
-  editor.updateOptions({
+  panes.applyOptions({
     fontSize: settings.font_size,
     minimap: { enabled: settings.show_minimap },
     wordWrap: settings.word_wrap ? "on" : "off",
     renderWhitespace: settings.show_whitespace ? "all" : "none",
     lineNumbers: settings.show_line_numbers ? "on" : "off",
-    tabSize: settings.tab_size,
     autoIndent: settings.auto_indent ? "full" : "none",
   });
+  applyModelOptions();
   monaco.editor.setTheme(settings.theme === "light" ? "rn-light" : "rn-dark");
   document.body.classList.toggle("light", settings.theme === "light");
+}
+
+/** Tab size is a per-model option in Monaco. */
+function applyModelOptions(): void {
+  for (const tab of tabs.tabs) {
+    tab.model.updateOptions({ tabSize: settings.tab_size });
+  }
 }
 
 function toggleSetting(
@@ -188,8 +218,14 @@ function buildSession(): PersistedState {
       content: t.path && !tabs.isDirty(t) ? null : t.model.getValue(),
       cursor_line: t.cursorLine,
       cursor_column: t.cursorColumn,
+      pane: t.pane,
+      active: tabs.activeByPane[t.pane] === t.id,
     })),
-    active_tab: Math.max(0, tabs.tabs.findIndex((t) => t.id === tabs.activeId)),
+    active_tab: Math.max(
+      0,
+      tabs.tabs.findIndex((t) => t.id === tabs.active()?.id),
+    ),
+    active_pane: tabs.activePane,
     recent_files: recentFiles,
   };
 }
@@ -216,36 +252,11 @@ function addRecent(path: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Tabs
+// Tabs & panes
 // ---------------------------------------------------------------------------
 
 function renderTabs(): void {
-  const bar = $("tabbar");
-  bar.innerHTML = "";
-  for (const tab of tabs.tabs) {
-    const el = document.createElement("div");
-    el.className = "tab" + (tab.id === tabs.activeId ? " active" : "");
-    const dot = document.createElement("span");
-    dot.className = "dirty-dot";
-    dot.style.visibility = tabs.isDirty(tab) ? "visible" : "hidden";
-    const title = document.createElement("span");
-    title.textContent = tab.title;
-    const closeBtn = document.createElement("button");
-    closeBtn.className = "close-btn";
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      void closeTab(tab);
-    });
-    el.append(dot, title, closeBtn);
-    el.addEventListener("click", () => tabs.activate(tab.id));
-    el.addEventListener("auxclick", (e) => {
-      if ((e as MouseEvent).button === 1) {
-        void closeTab(tab);
-      }
-    });
-    bar.appendChild(el);
-  }
+  panes.renderTabBars(tabs);
 }
 
 function updateWindowTitle(): void {
@@ -256,6 +267,7 @@ function updateWindowTitle(): void {
 }
 
 function cursorInfo(): CursorInfo {
+  const editor = activeEditor();
   const pos = editor.getPosition() ?? { lineNumber: 1, column: 1 };
   const sel = editor.getSelection();
   const model = editor.getModel();
@@ -264,27 +276,11 @@ function cursorInfo(): CursorInfo {
 }
 
 function onTabsChanged(): void {
-  if (lastActiveTabId !== null && lastActiveTabId !== tabs.activeId) {
-    const prev = tabs.byId(lastActiveTabId);
-    if (prev) {
-      prev.viewState = editor.saveViewState();
-    }
-  }
-  const tab = tabs.active();
-  if (tab) {
-    if (editor.getModel() !== tab.model) {
-      editor.setModel(tab.model);
-      if (tab.viewState) {
-        editor.restoreViewState(tab.viewState);
-      }
-    }
-  } else {
-    editor.setModel(null);
-  }
-  lastActiveTabId = tabs.activeId;
+  applyModelOptions();
+  panes.syncEditors(tabs);
   renderTabs();
   updateWindowTitle();
-  statusBar.update(tab, cursorInfo());
+  statusBar.update(tabs.active(), cursorInfo());
   void syncWatch();
   persistSessionSoon();
 }
@@ -300,13 +296,164 @@ async function syncWatch(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Split view
+// ---------------------------------------------------------------------------
+
+function splitMove(): void {
+  const tab = tabs.active();
+  if (!tab) {
+    return;
+  }
+  const target: PaneId = tabs.activePane === 1 ? 2 : 1;
+  if (!panes.split) {
+    panes.setSplit(true);
+  }
+  tabs.moveToPane(tab.id, target);
+}
+
+function toggleSplit(): void {
+  if (panes.split) {
+    closeSplit();
+  } else {
+    splitMove();
+  }
+}
+
+function closeSplit(): void {
+  if (!panes.split) {
+    return;
+  }
+  for (const tab of tabs.tabsIn(2)) {
+    tab.pane = 1;
+  }
+  panes.setSplit(false);
+  const active = tabs.active();
+  if (active) {
+    tabs.activeByPane[1] = active.id;
+    tabs.activePane = 1;
+  }
+  onTabsChanged();
+}
+
+function focusOtherPane(): void {
+  if (!panes.split) {
+    return;
+  }
+  tabs.focusPane(tabs.activePane === 1 ? 2 : 1);
+  statusBar.update(tabs.active(), cursorInfo());
+}
+
+// ---------------------------------------------------------------------------
+// Compare (diff) views
+// ---------------------------------------------------------------------------
+
+function showDiff(
+  original: monaco.editor.ITextModel,
+  originalTitle: string,
+  ownsOriginal: boolean,
+  modifiedTab: Tab,
+): void {
+  const spec: DiffSpec = {
+    original,
+    modified: modifiedTab.model,
+    originalTitle,
+    modifiedTitle: modifiedTab.title,
+    ownsOriginal,
+    ownsModified: false,
+  };
+  panes.get(tabs.activePane).showDiff(spec);
+  renderTabs();
+}
+
+function compareWithSaved(): void {
+  const tab = tabs.active();
+  if (!tab) {
+    return;
+  }
+  if (tab.model.getValue() === tab.savedContent) {
+    toast("No changes to compare — the buffer matches the saved version.");
+    return;
+  }
+  const original = monaco.editor.createModel(tab.savedContent, tab.language);
+  showDiff(original, `${tab.title} (saved)`, true, tab);
+}
+
+async function compareWithTab(): Promise<void> {
+  const tab = tabs.active();
+  if (!tab) {
+    return;
+  }
+  const others = tabs.tabs.filter((t) => t.id !== tab.id);
+  if (others.length === 0) {
+    toast("No other open tab to compare with.");
+    return;
+  }
+  const chosen = await pickTab("Compare with Another Tab", others);
+  if (!chosen) {
+    return;
+  }
+  // Shared models are not disposed when the compare view closes.
+  showDiff(chosen.model, chosen.title, false, tab);
+}
+
+async function compareWithFile(): Promise<void> {
+  const tab = tabs.active();
+  if (!tab) {
+    return;
+  }
+  const selected = await openDialog({ multiple: false });
+  if (!selected) {
+    return;
+  }
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  try {
+    const payload = await ipc.readFile(path);
+    const original = monaco.editor.createModel(payload.content, payload.language);
+    showDiff(original, payload.title, true, tab);
+  } catch (err) {
+    toast(`Compare failed: ${errorMessage(err)}`);
+  }
+}
+
+async function compareViaPlugin(): Promise<void> {
+  const tab = tabs.active();
+  if (!tab) {
+    return;
+  }
+  try {
+    const result = await ipc.invokePlugin("toolkit", "text.diff", {
+      text: tab.model.getValue(),
+      base: tab.savedContent,
+      base_label: tab.path ? `${tab.title} (saved)` : "(empty)",
+      modified_label: `${tab.title} (current)`,
+    });
+    const unified = (result as { unified?: string })?.unified ?? "";
+    const diffTab = tabs.createUntitled("", tabs.activePane);
+    diffTab.model.setValue(unified || "(no differences)");
+    tabs.setLanguage(diffTab, "diff");
+    diffTab.savedContent = diffTab.model.getValue();
+    diffTab.title = `diff: ${tab.title}`;
+    renderTabs();
+    updateWindowTitle();
+  } catch (err) {
+    toast(`Plugin compare failed: ${errorMessage(err)}`);
+  }
+}
+
+function closeCompareView(): void {
+  panes.get(tabs.activePane).closeDiff();
+  panes.syncEditors(tabs);
+  renderTabs();
+}
+
+// ---------------------------------------------------------------------------
 // File actions
 // ---------------------------------------------------------------------------
 
-async function openPath(path: string): Promise<void> {
+async function openPath(path: string, pane: PaneId = tabs.activePane): Promise<void> {
   try {
     const payload = await ipc.readFile(path);
-    tabs.openFile(payload);
+    tabs.openFile(payload, pane);
     addRecent(path);
   } catch (err) {
     toast(`Could not open ${path}: ${errorMessage(err)}`);
@@ -575,12 +722,12 @@ function editMenuItems(): MenuItem[] {
     {
       label: "Undo",
       shortcut: "⌘Z",
-      action: () => editor.trigger("menu", "undo", null),
+      action: () => activeEditor().trigger("menu", "undo", null),
     },
     {
       label: "Redo",
       shortcut: "⇧⌘Z",
-      action: () => editor.trigger("menu", "redo", null),
+      action: () => activeEditor().trigger("menu", "redo", null),
     },
     { separator: true },
     {
@@ -621,7 +768,7 @@ function editMenuItems(): MenuItem[] {
     {
       label: "Select All",
       shortcut: "⌘A",
-      action: () => editor.trigger("menu", "editor.action.selectAll", null),
+      action: () => activeEditor().trigger("menu", "editor.action.selectAll", null),
     },
   ];
 }
@@ -683,11 +830,40 @@ function viewMenuItems(): MenuItem[] {
         persistSessionSoon();
       },
     },
+    { separator: true },
+    {
+      label: panes.split ? "Close Split View" : "Split View",
+      shortcut: "⌘\\",
+      action: toggleSplit,
+    },
+    {
+      label: "Move Tab to Other View",
+      action: splitMove,
+    },
+    {
+      label: "Focus Other View",
+      disabled: () => !panes.split,
+      action: focusOtherPane,
+    },
   ];
 }
 
 function toolsMenuItems(): MenuItem[] {
-  const items: MenuItem[] = [];
+  const items: MenuItem[] = [
+    { label: "Compare with Saved Version", action: compareWithSaved },
+    { label: "Compare with Another Tab…", action: () => void compareWithTab() },
+    { label: "Compare with File on Disk…", action: () => void compareWithFile() },
+    {
+      label: "Compare via Plugin (Unified Diff)",
+      action: () => void compareViaPlugin(),
+    },
+    {
+      label: "Close Compare View",
+      disabled: () => !panes.get(tabs.activePane).diff,
+      action: closeCompareView,
+    },
+    { separator: true },
+  ];
   if (pluginCache && pluginCache.plugins.length > 0) {
     for (const plugin of pluginCache.plugins) {
       items.push({
@@ -726,10 +902,10 @@ function helpMenuItems(): MenuItem[] {
 async function pasteAction(): Promise<void> {
   try {
     const text = await navigator.clipboard.readText();
-    const selection = editor.getSelection();
+    const selection = activeEditor().getSelection();
     if (text && selection) {
-      editor.executeEdits("paste", [{ range: selection, text }]);
-      editor.focus();
+      activeEditor().executeEdits("paste", [{ range: selection, text }]);
+      activeEditor().focus();
     }
   } catch {
     toast("Paste from the menu is not permitted here — use ⌘V / Ctrl+V.");
@@ -742,6 +918,7 @@ async function goToLineAction(): Promise<void> {
   if (!value || !Number.isFinite(line) || line < 1) {
     return;
   }
+  const editor = activeEditor();
   const model = editor.getModel();
   const clamped = Math.min(Math.floor(line), model?.getLineCount() ?? 1);
   editor.setPosition({ lineNumber: clamped, column: 1 });
@@ -775,6 +952,9 @@ function buildToolbar(): void {
   sep();
   addButton("Find", "Find (⌘F)", () => findController.open("find"));
   addButton("Replace", "Replace (⌥⌘F)", () => findController.open("replace"));
+  sep();
+  addButton("Split", "Toggle split view (⌘\\)", toggleSplit);
+  addButton("Diff", "Compare with saved version", compareWithSaved);
   sep();
   addButton("Wrap", "Toggle word wrap", () => toggleSetting("word_wrap"));
   addButton("Theme", "Toggle light/dark theme", () => {
@@ -832,6 +1012,21 @@ function wireKeyboard(): void {
           handled();
           void goToLineAction();
           break;
+        case "\\":
+          handled();
+          toggleSplit();
+          break;
+        case "1":
+          handled();
+          tabs.focusPane(1);
+          statusBar.update(tabs.active(), cursorInfo());
+          break;
+        case "2":
+          handled();
+          if (panes.split) {
+            focusOtherPane();
+          }
+          break;
         case "=":
         case "+":
           handled();
@@ -856,14 +1051,36 @@ function wireKeyboard(): void {
 async function start(): Promise<void> {
   defineThemes();
 
-  editor = monaco.editor.create($("editor-host"), {
-    model: null,
-    theme: "rn-dark",
-    fontSize: 14,
-    automaticLayout: true,
-    smoothScrolling: true,
-    scrollBeyondLastLine: false,
-    renderLineHighlight: "all",
+  panes = new PaneManager($("split-container"), {
+    onTabActivate: (id) => tabs.activate(id),
+    onTabClose: (id) => {
+      const tab = tabs.byId(id);
+      if (tab) {
+        void closeTab(tab);
+      }
+    },
+    onPaneFocus: (pane) => {
+      tabs.focusPane(pane);
+      statusBar.update(tabs.active(), cursorInfo());
+    },
+    onCursorChange: (pane) => {
+      const tab = tabs.activeIn(pane);
+      const info = cursorInfo();
+      if (tab) {
+        tab.cursorLine = info.lineNumber;
+        tab.cursorColumn = info.column;
+      }
+      statusBar.update(tabs.active(), info);
+    },
+    onContentChange: () => {
+      renderTabs();
+      updateWindowTitle();
+      persistSessionSoon();
+    },
+    onDiffClosed: () => {
+      panes.syncEditors(tabs);
+      renderTabs();
+    },
   });
 
   bottomPanel = new BottomPanel($("bottom-panel"));
@@ -890,7 +1107,7 @@ async function start(): Promise<void> {
     },
   });
 
-  findController = new FindController($("find-panel"), tabs, () => editor, bottomPanel, {
+  findController = new FindController($("find-panel"), tabs, () => activeEditor(), bottomPanel, {
     askFolder: (initial) => promptText("Find in Files — folder path", initial),
     showProjectResults: (rows: FindResultRow[]) => bottomPanel.renderFindResults(rows),
     openPath: (path: string) => openPath(path),
@@ -907,21 +1124,6 @@ async function start(): Promise<void> {
   ]);
   buildToolbar();
   wireKeyboard();
-
-  editor.onDidChangeCursorSelection(() => {
-    const tab = tabs.active();
-    const info = cursorInfo();
-    if (tab) {
-      tab.cursorLine = info.lineNumber;
-      tab.cursorColumn = info.column;
-    }
-    statusBar.update(tab, info);
-  });
-  editor.onDidChangeModelContent(() => {
-    renderTabs();
-    updateWindowTitle();
-    persistSessionSoon();
-  });
 
   $("ext-reload").addEventListener("click", () => {
     if (bannerTab) {
@@ -948,43 +1150,57 @@ async function start(): Promise<void> {
   recentFiles = session.recent_files ?? [];
   applySettings();
 
+  const paneActives: Record<PaneId, number | null> = { 1: null, 2: null };
   for (const saved of session.open_tabs ?? []) {
+    const pane: PaneId = saved.pane === 2 ? 2 : 1;
+    let tab: Tab | null = null;
     if (saved.path) {
       const before = tabs.tabs.length;
-      await openPath(saved.path);
-      const tab =
+      await openPath(saved.path, pane);
+      tab =
         tabs.tabs.length > before
           ? tabs.tabs[tabs.tabs.length - 1]
           : tabs.byPath(saved.path);
-      if (tab) {
-        // Recover unsaved draft content (crash safety): the disk content
-        // stays in savedContent so the tab remains dirty.
-        if (saved.content != null && saved.content !== tab.model.getValue()) {
-          tab.model.setValue(saved.content);
-        }
-        tab.cursorLine = saved.cursor_line || 1;
-        tab.cursorColumn = saved.cursor_column || 1;
-      }
     } else {
-      const tab = tabs.createUntitled(saved.content ?? "");
+      tab = tabs.createUntitled(saved.content ?? "", pane);
       if (saved.content) {
         // A restored untitled buffer is unsaved work: keep it dirty so
         // closing it prompts instead of silently dropping the draft.
         tab.savedContent = "";
       }
+    }
+    if (tab) {
+      if (saved.content != null && saved.path && saved.content !== tab.model.getValue()) {
+        // Recover unsaved draft content (crash safety): the disk content
+        // stays in savedContent so the tab remains dirty.
+        tab.model.setValue(saved.content);
+      }
       tab.cursorLine = saved.cursor_line || 1;
       tab.cursorColumn = saved.cursor_column || 1;
+      if (saved.active) {
+        paneActives[pane] = tab.id;
+      }
     }
   }
   if (tabs.tabs.length === 0) {
-    tabs.createUntitled();
+    tabs.createUntitled("", 1);
   }
-  const active = tabs.tabs[session.active_tab ?? 0];
-  if (active && active.id !== tabs.activeId) {
-    tabs.activate(active.id);
+  for (const pane of [1, 2] as PaneId[]) {
+    const fallback = tabs.tabsIn(pane)[0]?.id ?? null;
+    tabs.activeByPane[pane] = paneActives[pane] ?? fallback;
   }
+  tabs.activePane = session.active_pane === 2 ? 2 : 1;
+  if (tabs.activeByPane[tabs.activePane] == null) {
+    const other: PaneId = tabs.activePane === 1 ? 2 : 1;
+    if (tabs.activeByPane[other] != null) {
+      tabs.activePane = other;
+    }
+  }
+  onTabsChanged();
+
   const activeTab = tabs.active();
   if (activeTab) {
+    const editor = activeEditor();
     const lineCount = editor.getModel()?.getLineCount() ?? 1;
     const position = {
       lineNumber: Math.min(activeTab.cursorLine, lineCount),

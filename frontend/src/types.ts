@@ -22,6 +22,8 @@ export interface SavedTab {
   content: string | null;
   cursor_line: number;
   cursor_column: number;
+  pane: number;
+  active: boolean;
 }
 
 export interface PersistedState {
@@ -36,6 +38,7 @@ export interface PersistedState {
   auto_reload: boolean;
   open_tabs: SavedTab[];
   active_tab: number;
+  active_pane: number;
   recent_files: string[];
 }
 
@@ -86,6 +89,7 @@ export function defaultSettings(): PersistedState {
     auto_reload: true,
     open_tabs: [],
     active_tab: 0,
+    active_pane: 1,
     recent_files: [],
   };
 }

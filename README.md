@@ -21,6 +21,13 @@ Editor** as the editing surface, and a **process-based plugin host**
   replace, replace-all, replace-all-in-open-tabs, find-all-in-open-tabs,
   find-in-files (backend search with directory/extension filters),
   match case / whole word / regex (with `$1` group expansion)
+- **Split view** — two side-by-side views, each with its own tab strip
+  (Notepad++-style "Move Tab to Other View"); per-pane focus, layout
+  persisted across restarts
+- **Compare (diff) view** — side-by-side visual diff of the buffer vs its
+  saved version, vs another open tab, or vs any file on disk (Monaco's
+  diff engine); plus `Compare via Plugin` for unified diffs computed by
+  the plugin host (`toolkit`'s `text.diff`)
 - **Session persistence** — open tabs (including unsaved untitled buffers),
   active tab, recent files and all settings survive restarts
 - **Settings & themes** — dark/light themes, font zoom, word wrap, line

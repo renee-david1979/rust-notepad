@@ -1,10 +1,13 @@
 import { monaco } from "./monaco-setup";
 import type { FilePayload, SavePayload } from "./types";
 
+export type PaneId = 1 | 2;
+
 export interface Tab {
   id: number;
   title: string;
   path: string | null;
+  pane: PaneId;
   model: monaco.editor.ITextModel;
   savedContent: string;
   encoding: string;
@@ -18,18 +21,25 @@ export interface Tab {
 }
 
 /**
- * Owns one Monaco model per tab; a single editor swaps models on switch
- * (the VS Code pattern) so scroll/undo state stays per-document.
+ * Owns one Monaco model per tab. With split view open, each tab belongs to
+ * a pane (Notepad++-style: two views, each with its own tab strip) and each
+ * pane's editor swaps models on switch, keeping scroll/undo per-document.
  */
 export class TabManager {
   tabs: Tab[] = [];
-  activeId: number | null = null;
-  /** Called whenever tabs open/close/switch (not on content edits). */
+  activeByPane: Record<PaneId, number | null> = { 1: null, 2: null };
+  activePane: PaneId = 1;
+  /** Called whenever tabs open/close/switch/move panes (not on edits). */
   onChange: () => void = () => {};
   private nextId = 1;
 
   active(): Tab | null {
-    return this.tabs.find((t) => t.id === this.activeId) ?? null;
+    return this.activeIn(this.activePane);
+  }
+
+  activeIn(pane: PaneId): Tab | null {
+    const id = this.activeByPane[pane];
+    return id != null ? this.byId(id) : null;
   }
 
   byId(id: number): Tab | null {
@@ -40,11 +50,15 @@ export class TabManager {
     return this.tabs.find((t) => t.path === path) ?? null;
   }
 
+  tabsIn(pane: PaneId): Tab[] {
+    return this.tabs.filter((t) => t.pane === pane);
+  }
+
   isDirty(tab: Tab): boolean {
     return tab.model.getValue() !== tab.savedContent;
   }
 
-  createUntitled(initialContent = ""): Tab {
+  createUntitled(initialContent = "", pane: PaneId = this.activePane): Tab {
     const count = this.tabs.filter((t) => t.path === null).length + 1;
     const model = monaco.editor.createModel(
       initialContent,
@@ -56,6 +70,7 @@ export class TabManager {
       id: this.nextId++,
       title: `Untitled ${count}`,
       path: null,
+      pane,
       model,
       savedContent: initialContent,
       encoding: "UTF-8",
@@ -72,7 +87,7 @@ export class TabManager {
     return tab;
   }
 
-  openFile(payload: FilePayload): Tab {
+  openFile(payload: FilePayload, pane: PaneId = this.activePane): Tab {
     const existing = this.byPath(payload.path);
     if (existing) {
       this.activate(existing.id);
@@ -88,6 +103,7 @@ export class TabManager {
       id: this.nextId++,
       title: payload.title,
       path: payload.path,
+      pane,
       model,
       savedContent: payload.content,
       encoding: payload.encoding,
@@ -104,11 +120,39 @@ export class TabManager {
     return tab;
   }
 
+  /** Activate a tab and focus its pane. No-op for unknown ids. */
   activate(id: number): void {
-    if (this.activeId === id || !this.byId(id)) {
+    const tab = this.byId(id);
+    if (!tab || (this.activeByPane[tab.pane] === id && this.activePane === tab.pane)) {
       return;
     }
-    this.activeId = id;
+    this.activePane = tab.pane;
+    this.activeByPane[tab.pane] = id;
+    this.onChange();
+  }
+
+  focusPane(pane: PaneId): void {
+    if (this.activePane === pane) {
+      return;
+    }
+    this.activePane = pane;
+    this.onChange();
+  }
+
+  /** Move a tab into another pane (used by split view), focusing it there. */
+  moveToPane(id: number, pane: PaneId): void {
+    const tab = this.byId(id);
+    if (!tab || tab.pane === pane) {
+      return;
+    }
+    const from = tab.pane;
+    tab.pane = pane;
+    this.activeByPane[pane] = id;
+    this.activePane = pane;
+    if (this.activeByPane[from] === id) {
+      const next = this.tabsIn(from)[0];
+      this.activeByPane[from] = next ? next.id : null;
+    }
     this.onChange();
   }
 
@@ -119,9 +163,9 @@ export class TabManager {
     }
     const [removed] = this.tabs.splice(idx, 1);
     removed.model.dispose();
-    if (this.activeId === id) {
-      const next = this.tabs[Math.min(idx, this.tabs.length - 1)];
-      this.activeId = next ? next.id : null;
+    if (this.activeByPane[removed.pane] === id) {
+      const next = this.tabsIn(removed.pane)[0];
+      this.activeByPane[removed.pane] = next ? next.id : null;
     }
     this.onChange();
   }

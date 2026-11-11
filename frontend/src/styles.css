@@ -211,17 +211,70 @@ body {
   color: var(--fg);
 }
 
-/* ---------- editor ---------- */
+/* ---------- editor / split panes ---------- */
 
 #editor-wrap {
   flex: 1;
   position: relative;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-#editor-host {
+#split-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.pane.pane-inactive {
+  opacity: 0.92;
+}
+
+.pane-separator {
+  width: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+  cursor: col-resize;
+}
+
+.pane-tabbar {
+  display: flex;
+  overflow-x: auto;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 34px;
+}
+
+.pane-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.pane-editor-host {
   position: absolute;
   inset: 0;
+}
+
+.pane-diff-host {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.tab.diff-tab span:first-child {
+  color: var(--accent-hover);
 }
 
 #ext-banner {

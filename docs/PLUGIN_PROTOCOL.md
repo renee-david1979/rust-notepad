@@ -71,6 +71,16 @@ Return any JSON value; it is shown to the user in the plugin output panel.
 Returning `{"text": "..."}` from a formatting capability also offers the
 result back for insertion. Raise/return an error to surface a message.
 
+Compare-style methods receive two texts:
+
+```json
+{ "text": "<modified document>", "base": "<baseline document>",
+  "base_label": "saved version", "modified_label": "current buffer" }
+```
+
+Returning `{"unified": "<standard unified diff>"}` (like the toolkit's
+`text.diff`) lets the host render the diff as a syntax-colored document.
+
 ## Lifecycle
 
 - The host spawns the process lazily on the first `invoke`.
