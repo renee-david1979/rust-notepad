@@ -31,12 +31,16 @@ this file as verified system state without re-checking it.
 - **Data-loss policy is absolute:** a tab is never closed if the user asked
   to save and the save failed or the Save-As dialog was cancelled
   (`saveTab`/`saveTabAs` return booleans and every close path checks).
-  Window-close prompts per dirty tab and flushes the session first.
-  KNOWN GAP (live-verified 2026-11-11): ⌘Q / app-quit exits WITHOUT the
-  per-tab prompt — the native quit path bypasses `onCloseRequested`
-  (drafts still survive via session autosave, but the prompt policy holds
-  only on the window-close path; fix candidate: handle Tauri's
-  exit-requested/menu-quit path like window close).
+  Exit/window-close prompts per dirty tab and flushes the session first —
+  including ⌘Q / Quit menu since `7d09a7f`: the native Quit item is custom
+  (tao has no `applicationShouldTerminate`, so the stock Quit terminates
+  uninterceptably and `ExitRequested` fires only after the window is gone)
+  and routes through the frontend's guarded flow; `exit_app` +
+  `EXIT_APPROVED` is the only way out. Live-verified (prompt, Cancel keeps
+  the app alive, clean exit on approval). KNOWN tao LIMITATION: Dock-Quit
+  and system logout/shutdown terminate without prompting — the debounced
+  draft autosave is the safety net there. Full design rationale:
+  skill `tauri-app-development` (`references/exit-guard.md`).
   Session JSON stores unsaved drafts (untitled + dirty file tabs), cursor
   position, and pane layout; restored drafts come back dirty.
 - **Split view model:** Notepad++-style — two panes, each with its own tab
@@ -176,9 +180,9 @@ npm test          # frontend unit tests (tsc + node --test)
    safe integers only). Live-verified in the bundle 2026-11-11: after
    closing "Untitled 1" the next new tab is "Untitled 4" (no duplicate
    names), and a restart keeps titles 2/3/4 (no 1/2/3 renumbering) with
-   drafts restored dirty and their content intact. Bonus finding: the
-   ⌘Q prompt gap in section 1 (window-close prompts correctly, per tab,
-   in order). ECC
+   drafts restored dirty and their content intact. The ⌘Q prompt gap that
+   this check uncovered was FIXED in `7d09a7f` (custom native Quit item →
+   guarded flow; see section 1). ECC
    reviews: code-reviewer, rust-reviewer, typescript-reviewer all
    APPROVE WITH NITS, all nits addressed (tests type-checked + in CI,
    restore routes saved titles through `createUntitled`'s title param).
@@ -256,3 +260,7 @@ npm test          # frontend unit tests (tsc + node --test)
 - **Before GUI-testing the bundle, `ps` for a stale instance** — `open`
   silently focuses an existing process still running the OLD binary, and
   the test then exercises stale code. Quit it (⌘Q) and relaunch.
+- **Exit-guard design and the tao termination model** (why the stock Quit
+  can't be intercepted, the custom-menu fix, Dock-Quit limitation) is
+  captured in the `tauri-app-development` skill — load it before touching
+  quit/close/menu code here.
