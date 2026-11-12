@@ -529,6 +529,37 @@ body {
   color: #fff;
 }
 
+.plugin-caps button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plugin-caps button:disabled:hover {
+  background: var(--bg3);
+  color: inherit;
+}
+
+.plugin-caps button.danger:hover {
+  background: var(--error, #c0392b);
+}
+
+.plugin-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.plugin-toolbar button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+
+.plugin-card.disabled h4 {
+  color: var(--fg-dim);
+}
+
 .plugin-output {
   white-space: pre-wrap;
   word-break: break-word;

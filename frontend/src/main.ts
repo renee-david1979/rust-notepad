@@ -731,7 +731,109 @@ function dismissBannerIfFor(tab: Tab): void {
 
 function renderPluginList(status: PluginStatus): void {
   pluginCache = status;
-  bottomPanel.renderPlugins(status, (name, method) => void runPluginCapability(name, method));
+  bottomPanel.renderPlugins(status, {
+    run: (name, method) => void runPluginCapability(name, method),
+    toggle: (name, enabled) => void setPluginEnabledAction(name, enabled),
+    remove: (name) => void removePluginAction(name),
+    install: () => void installPluginAction(),
+    reload: () => void reloadPluginsAction(),
+  });
+}
+
+function confirmAction(title: string, message: string, confirmLabel: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const body = document.createElement("p");
+    body.textContent = message;
+    // Escape dismisses like Cancel; the listener dies with the promise so
+    // it can never leak into other modals (which handle keys themselves).
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideModal();
+        settle(false);
+      }
+    };
+    const settle = (value: boolean): void => {
+      document.removeEventListener("keydown", onKey);
+      resolve(value);
+    };
+    document.addEventListener("keydown", onKey);
+    showModal(
+      title,
+      body,
+      [
+        { label: "Cancel", run: () => settle(false) },
+        { label: confirmLabel, primary: true, run: () => settle(true) },
+      ],
+      () => settle(false),
+    );
+  });
+}
+
+// Plugin mutations can resolve out of order (a slow toggle landing after a
+// newer one); only the newest result may repaint the panel. removeInFlight
+// stops a double-click Remove from firing two deletions.
+let pluginMutationGen = 0;
+let removeInFlight = false;
+
+async function setPluginEnabledAction(name: string, enabled: boolean): Promise<void> {
+  const gen = ++pluginMutationGen;
+  try {
+    const status = await ipc.setPluginEnabled(name, enabled);
+    if (gen === pluginMutationGen) {
+      renderPluginList(status);
+    }
+    toast(`${name} ${enabled ? "enabled" : "disabled"}`);
+  } catch (err) {
+    toast(`Plugin toggle failed: ${errorMessage(err)}`);
+  }
+}
+
+async function removePluginAction(name: string): Promise<void> {
+  if (removeInFlight) {
+    return;
+  }
+  removeInFlight = true;
+  try {
+    const confirmed = await confirmAction(
+      "Remove Plugin",
+      `Delete the installed plugin "${name}"? Its files are removed from disk.`,
+      "Remove",
+    );
+    if (!confirmed) {
+      return;
+    }
+    const gen = ++pluginMutationGen;
+    try {
+      const status = await ipc.removePlugin(name);
+      if (gen === pluginMutationGen) {
+        renderPluginList(status);
+      }
+      toast(`Plugin ${name} removed`);
+    } catch (err) {
+      toast(`Plugin removal failed: ${errorMessage(err)}`);
+    }
+  } finally {
+    removeInFlight = false;
+  }
+}
+
+async function installPluginAction(): Promise<void> {
+  const gen = ++pluginMutationGen;
+  try {
+    const picked = await openDialog({ directory: true, title: "Select Plugin Folder" });
+    const source = typeof picked === "string" && picked ? picked : null;
+    if (!source) {
+      return;
+    }
+    const status = await ipc.installPlugin(source);
+    if (gen === pluginMutationGen) {
+      renderPluginList(status);
+    }
+    toast("Plugin installed");
+  } catch (err) {
+    toast(`Plugin install failed: ${errorMessage(err)}`);
+  }
 }
 
 async function refreshPlugins(): Promise<void> {

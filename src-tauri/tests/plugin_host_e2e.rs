@@ -281,8 +281,10 @@ fn manager_invokes_real_plugin_and_tracks_running_state() {
         eprintln!("SKIP: python3 not available");
         return;
     }
-    let manager =
-        PluginManager::discover(&[toolkit_dir().parent().expect("plugins dir").to_path_buf()]);
+    let manager = PluginManager::discover(
+        &[toolkit_dir().parent().expect("plugins dir").to_path_buf()],
+        &std::collections::HashSet::new(),
+    );
 
     let listed = manager.list();
     let toolkit = listed

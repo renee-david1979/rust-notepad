@@ -5,4 +5,4 @@ pub mod host;
 pub mod manager;
 
 pub use host::{load_manifest, PluginHost, PluginManifest, RpcError, RpcRequest, RpcResponse};
-pub use manager::{PluginInfo, PluginManager};
+pub use manager::{PluginConfig, PluginInfo, PluginManager};

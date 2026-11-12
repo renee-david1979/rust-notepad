@@ -26,9 +26,12 @@ export const ipc = {
     invoke<ProjectHit[]>("find_in_files", { root, needle, options }),
 
   listPlugins: () => invoke<PluginStatus>("list_plugins"),
+  reloadPlugins: () => invoke<PluginStatus>("reload_plugins"),
+  setPluginEnabled: (name: string, enabled: boolean) =>
+    invoke<PluginStatus>("set_plugin_enabled", { name, enabled }),
+  installPlugin: (source: string) => invoke<PluginStatus>("install_plugin", { source }),
+  removePlugin: (name: string) => invoke<PluginStatus>("remove_plugin", { name }),
 
   invokePlugin: (name: string, method: string, params: unknown) =>
     invoke<unknown>("invoke_plugin", { name, method, params }),
-
-  reloadPlugins: () => invoke<PluginStatus>("reload_plugins"),
 };

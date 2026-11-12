@@ -67,6 +67,8 @@ export interface PluginInfo {
   capabilities: string[];
   dir: string;
   running: boolean;
+  enabled: boolean;
+  removable: boolean;
 }
 
 export interface PluginStatus {

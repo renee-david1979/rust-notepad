@@ -107,6 +107,9 @@ pub fn run() {
             commands::list_plugins,
             commands::invoke_plugin,
             commands::reload_plugins,
+            commands::set_plugin_enabled,
+            commands::install_plugin,
+            commands::remove_plugin,
             commands::exit_app,
         ])
         .build(tauri::generate_context!())

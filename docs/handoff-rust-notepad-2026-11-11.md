@@ -4,7 +4,7 @@
 scope plus the three nice-to-haves (file drag-drop, resizable split
 separator, tab reordering — commit `91c3847`), the follow-ups and the
 v0.2.0 release run (commits `fe90eaa`, `666c386`).**
-This is not an unexecuted plan — the app is built, tested (52 Rust + 11
+This is not an unexecuted plan — the app is built, tested (61 Rust + 11
 node tests), bundled, and live-verified in the running macOS app. The
 remaining items below are roadmap/optional work plus decisions only the
 user can make. Every fact below is a snapshot: re-verify before acting.
@@ -151,9 +151,13 @@ npm test          # frontend unit tests (tsc + node --test)
    (unsigned is fine).** The bundle stays unsigned (Gatekeeper:
    right-click → Open). Revisit only with a user-supplied Apple Developer
    ID; do not attempt without one.
+   NOTE: the plugin manager UI (install/enable/disable/remove) from this
+   roadmap was DONE 2026-11-12 — Plugins panel toolbar + per-plugin
+   toggles, plugins.json disabled list, staged/atomic install with path
+   guards, remove limited to installed plugins. Remaining roadmap is the
+   list above.
 4. **Roadmap features (user picks, order advisory):** macro
-   record/playback; function list / document map; plugin manager UI
-   (install/enable/disable beyond current reload); hex viewer; diff-viewer
+   record/playback; function list / document map; hex viewer; diff-viewer
    improvements (inline unified-diff rendering); UDL editor; i18n. PRD
    with full specs: `docs/notepad-plus-plus-clone-prd.md`. For each: extend
    the existing module named in section 4 — e.g. macros hook the
