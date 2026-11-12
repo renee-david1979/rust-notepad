@@ -61,7 +61,8 @@ class Pane {
     this.diff.setModel(spec);
     this.diffTitle = `${spec.originalTitle} ↔ ${spec.modifiedTitle}`;
     this.editorHost.style.display = "none";
-    this.diffHost.style.display = "block";
+    // Flex column so the toolbar sizes itself and the editor takes the rest.
+    this.diffHost.style.display = "flex";
   }
 
   closeDiff(): void {

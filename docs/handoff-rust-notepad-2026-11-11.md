@@ -134,22 +134,29 @@ npm test          # frontend unit tests (tsc + node --test)
 
 ## 5. Remaining tasks (IN ORDER; each self-contained)
 
-**⛔ IN FLIGHT (2026-11-12, finish FIRST): diff-viewer improvements are
-implemented in the working tree but NOT yet committed.** Scope (user
-picked "2" = Monaco built-in knobs + jsdiff): `diff.ts` toolbar with
-Inline/Side-by-side, Ignore-whitespace, Collapse-unchanged toggles +
-`renderIndicators`; "Copy as patch" / "Export .patch…" via the new pure
-`patch.ts` (jsdiff `createTwoFilesPatch`, 4 unit tests in
-`frontend/tests/patch.test.ts`); external-change banner gains a
-**Compare** button (`compareWithDisk`) closing PRD FM-03. State: build ✓,
-15/15 node tests, Rust gate green (unchanged backend). Two ECC reviews
-(typescript-reviewer + code-reviewer) were dispatched — if their results
-were never folded in, re-dispatch them or self-review
-`git diff` before committing. Remaining: fix any review findings,
-live-verify in a rebuilt bundle (screenshot-free method — skill
-`screenshot-free-gui`; check diff toolbar toggles, Copy-as-patch →
-verify via `pbpaste`, banner Compare against an edited-on-disk file),
-then commit + `git push fork rebuild`, and update this block to DONE.
+**✅ DONE 2026-11-12: diff-viewer improvements** (committed with this
+update). Scope (user picked "2" = Monaco built-in knobs + jsdiff):
+`diff.ts` toolbar (Inline/Side-by-side, Ignore-whitespace,
+Collapse-unchanged toggles + `renderIndicators`); "Copy as patch" /
+"Export .patch…" via the pure `patch.ts` (jsdiff `createTwoFilesPatch`,
+6 unit tests in `frontend/tests/patch.test.ts`); external-change banner
+gained a **Compare** button (`comparePathWithTab` → `compareWithDisk`)
+closing PRD FM-03. ECC reviews: typescript-reviewer REQUEST CHANGES
+(unhandled promise rejections outside try — HIGH; dispose listener leak;
+magic-height CSS) + code-reviewer APPROVE WITH NITS (banner Compare
+opened in the active pane instead of the tab's own; banner dismissed on
+failure; compare-path duplication) — ALL findings fixed (full try/catch
++ logged errors, dispose clears host DOM, flex layout, tabs.activate
+before diff, banner hides only on success, shared comparePathWithTab
+helper with model-dispose-on-throw, 2 edge tests incl. argument-order
+guard). Deferred nits: toggle-state persistence across views; the
+toolkit `text.diff` plugin path stays as the plugin-side compare demo.
+Live-verified (screenshot-free method): diff toolbar renders, Inline
+toggle flips the label, Copy-as-patch lands a real unified patch in the
+clipboard (`pbpaste` verified), file-changed fires both paths (clean →
+auto-reload + toast; dirty → banner), banner Compare opens
+"(on disk) ↔ buffer" diff and dismisses only on success. Gate green:
+61 Rust + 17 node tests.
 
 1. **Push — DONE (fork model), do not re-ask.** The work lives on the
    fork `renee-david1979/rust-notepad`, branch `rebuild` (remote `fork`).

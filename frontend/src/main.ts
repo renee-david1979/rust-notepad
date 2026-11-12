@@ -498,6 +498,28 @@ async function compareWithTab(): Promise<void> {
   showDiff(chosen.model, chosen.title, false, tab);
 }
 
+/** Read `path` and diff it against `tab`'s buffer in the tab's own pane. */
+async function comparePathWithTab(
+  tab: Tab,
+  path: string,
+  label?: string,
+): Promise<boolean> {
+  try {
+    const payload = await ipc.readFile(path);
+    const original = monaco.editor.createModel(payload.content, payload.language);
+    try {
+      showDiff(original, label ?? payload.title, true, tab);
+    } catch (err) {
+      original.dispose();
+      throw err;
+    }
+    return true;
+  } catch (err) {
+    toast(`Compare failed: ${errorMessage(err)}`);
+    return false;
+  }
+}
+
 async function compareWithFile(): Promise<void> {
   const tab = tabs.active();
   if (!tab) {
@@ -508,13 +530,15 @@ async function compareWithFile(): Promise<void> {
     return;
   }
   const path = Array.isArray(selected) ? selected[0] : selected;
-  try {
-    const payload = await ipc.readFile(path);
-    const original = monaco.editor.createModel(payload.content, payload.language);
-    showDiff(original, payload.title, true, tab);
-  } catch (err) {
-    toast(`Compare failed: ${errorMessage(err)}`);
+  await comparePathWithTab(tab, path);
+}
+
+/** External-change banner: diff the buffer against the file on disk. */
+async function compareWithDisk(tab: Tab): Promise<boolean> {
+  if (!tab.path) {
+    return false;
   }
+  return comparePathWithTab(tab, tab.path, `${tab.title} (on disk)`);
 }
 
 async function compareViaPlugin(): Promise<void> {
@@ -1353,6 +1377,21 @@ async function start(): Promise<void> {
       void reloadTab(bannerTab);
     }
     hideExtBanner();
+  });
+  $("ext-compare").addEventListener("click", () => {
+    if (bannerTab) {
+      // Activate the affected tab first: the compare view must open in
+      // ITS pane, not whatever pane happens to be focused. The banner is
+      // dismissed only on success — inspection does not resolve the
+      // conflict, so Reload/Overwrite must stay available on failure.
+      const tab = bannerTab;
+      tabs.activate(tab.id);
+      void compareWithDisk(tab).then((ok) => {
+        if (ok) {
+          hideExtBanner();
+        }
+      });
+    }
   });
   $("ext-overwrite").addEventListener("click", () => {
     if (bannerTab) {
