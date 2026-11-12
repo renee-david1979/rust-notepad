@@ -1,17 +1,19 @@
 # Handoff: rust-notepad (RustNotepad editor)
 
-**Date:** 2026-11-11 · **Status: IMPLEMENTED AND VERIFIED through v0.2.0
-scope plus the three nice-to-haves (file drag-drop, resizable split
-separator, tab reordering — commit `91c3847`), the follow-ups and the
-v0.2.0 release run (commits `fe90eaa`, `666c386`).**
-This is not an unexecuted plan — the app is built, tested (61 Rust + 11
+**Date:** 2026-11-11 (updated 2026-11-12) · **Status: IMPLEMENTED AND
+VERIFIED through v0.2.0 scope plus the three nice-to-haves (file
+drag-drop, resizable split separator, tab reordering — `91c3847`), the
+follow-ups (`fe90eaa`), the v0.2.0 release run (`666c386`), the quit-
+interception fix (`7d09a7f`), and the plugin manager (`d841009`).**
+This is not an unexecuted plan — the app is built, tested (61 Rust + 15
 node tests), bundled, and live-verified in the running macOS app. The
 remaining items below are roadmap/optional work plus decisions only the
 user can make. Every fact below is a snapshot: re-verify before acting.
 
-**Resume procedure:** read sections 1–2 (locks), then verify section 3
-facts live, then pick tasks from section 5. Never present anything from
-this file as verified system state without re-checking it.
+**Resume procedure (cold session):** read sections 1–2 (locks), then
+verify section 3 facts live, then check the IN-FLIGHT block at the top
+of section 5 — finish it before starting anything new. Never present
+anything from this file as verified system state without re-checking it.
 
 ---
 
@@ -81,8 +83,8 @@ npm test          # frontend unit tests (tsc + node --test)
 | Repo | `~/Projects/rust-notepad`, branch `rebuild` (the rebuild work), clean tree; local `main` = upstream snapshot (`3fb872d`) | `git -C ~/Projects/rust-notepad status` |
 | History | rebuild = all commits after upstream tip `3fb872d` (13 at last count) | `git log --oneline 3fb872d..HEAD` |
 | Pushed? | **Pushed to the fork `renee-david1979/rust-notepad`** (git remote `fork`): branch `rebuild` = the rebuild work (verified against `git rev-parse HEAD`); fork `main` = upstream tip `3fb872d`. Upstream `smartpcr/rust-notepad` (remote `origin`) is owned by Xiaodong Li (GitHub `smartpcr`, the original author) — read-only for us; he can pull from the fork if he wants the work upstream. | `git ls-remote fork main rebuild` |
-| Tests | 52/52 Rust green (44 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) + 11 node unit tests (`npm test`: tsc type-check + `node --test`) | gate commands above + `npm test` |
-| Bundles | `target/release/bundle/macos/RustNotepad.app` (9.50 MiB), `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` (5.89 MB file on disk) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npm run tauri build`) |
+| Tests | 61 Rust green (53 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) + 15 node unit tests (`npm test`: tsc type-check + `node --test`) | gate commands above + `npm test` |
+| Bundles | `target/release/bundle/macos/RustNotepad.app`, `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` — STALE relative to the diff-viewer work (built at `d841009`) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npx tauri build`) |
 | Release | tag `v0.2.0` on `666c386`, pushed to `fork`; Release workflow green on all 3 OS legs (run `43094512673`); **DRAFT GitHub release with 7 assets** (dmg, app.tar.gz, deb, rpm, AppImage, msi, exe) — **publish manually** on the fork's Releases page. `gh release` CANNOT see it: the fine-grained PAT lacks Contents scope (drafts invisible; `POST /releases` = 403). Verify via run logs ("Found draft release with tag v0.2.0") or the owner's browser | release workflow logs / owner's browser |
 | Toolchain | rustc 1.96.0, node 26.13.0, npm 12.2.2, full Xcode at `/Applications/Xcode.app` | `rustc --version; node --version` |
 | Frontend pins | monaco-editor 0.57.0, vite 8.3.8, typescript 7.0.2, @tauri-apps/api 2.12.4 | `package.json` + `npm ls` |
@@ -121,12 +123,33 @@ npm test          # frontend unit tests (tsc + node --test)
   text.word_count, text.validate_json/xml, text.format_json, text.diff,
   text.echo. Test fixture for the e2e suite.
 - `docs/PLUGIN_PROTOCOL.md`, `README.md`, `CLAUDE.md`, `.github/workflows/ci.yml`.
-- Build: `npm install && npm run tauri dev` / `npm run tauri build`.
-- `frontend/tests/tabs.test.ts` + `tsconfig.test.json` — `TabManager`
-  unit tests (reorder, untitled naming) via `npm test`; mocked Monaco
-  (see the `mock.module` pitfall in section 6).
+- Build: `npm install && npx tauri dev` / `npx tauri build` (there is NO
+  `tauri` npm script — `npm run tauri` / `npm tauri` both fail).
+- `frontend/src/patch.ts` — pure unified-patch builder (jsdiff v9
+  `createTwoFilesPatch`), used by the diff view's Copy-as-patch / Export
+  actions and unit-tested in `frontend/tests/patch.test.ts`.
+- `frontend/tests/tabs.test.ts` + `frontend/tests/patch.test.ts` +
+  `tsconfig.test.json` — frontend unit tests via `npm test`; mocked
+  Monaco (see the `mock.module` pitfall in section 6).
 
 ## 5. Remaining tasks (IN ORDER; each self-contained)
+
+**⛔ IN FLIGHT (2026-11-12, finish FIRST): diff-viewer improvements are
+implemented in the working tree but NOT yet committed.** Scope (user
+picked "2" = Monaco built-in knobs + jsdiff): `diff.ts` toolbar with
+Inline/Side-by-side, Ignore-whitespace, Collapse-unchanged toggles +
+`renderIndicators`; "Copy as patch" / "Export .patch…" via the new pure
+`patch.ts` (jsdiff `createTwoFilesPatch`, 4 unit tests in
+`frontend/tests/patch.test.ts`); external-change banner gains a
+**Compare** button (`compareWithDisk`) closing PRD FM-03. State: build ✓,
+15/15 node tests, Rust gate green (unchanged backend). Two ECC reviews
+(typescript-reviewer + code-reviewer) were dispatched — if their results
+were never folded in, re-dispatch them or self-review
+`git diff` before committing. Remaining: fix any review findings,
+live-verify in a rebuilt bundle (screenshot-free method — skill
+`screenshot-free-gui`; check diff toolbar toggles, Copy-as-patch →
+verify via `pbpaste`, banner Compare against an edited-on-disk file),
+then commit + `git push fork rebuild`, and update this block to DONE.
 
 1. **Push — DONE (fork model), do not re-ask.** The work lives on the
    fork `renee-david1979/rust-notepad`, branch `rebuild` (remote `fork`).
@@ -211,11 +234,17 @@ npm test          # frontend unit tests (tsc + node --test)
 - **The write/edit tools refuse to overwrite files modified externally
   (e.g. by `cargo fmt`) without a fresh `read_file` first** — run `cargo
   fmt` deliberately at the END of edits, not between them.
-- **GUI verification:** terminal has no Screen Recording/Accessibility
-  TCC — screenshots and clicks must go through the `computer_use` tool.
-  Webview AX exposure is flaky: ALWAYS `capture` fresh immediately before
-  clicking an element index (indices invalidate between captures), and
-  prefer `element` clicks over coordinates.
+- **GUI verification (updated 2026-11-12): use the screenshot-free AX
+  method — skill `screenshot-free-gui`** (AX text captures, directed
+  background clicks that never steal focus, osascript for native panels,
+  state truth from files/CLI). osascript now HOLDS Accessibility (user
+  grant 2026-11-12; probe first). Traps that skill records:
+  `capture_after=true` always returns screenshots (never use it when
+  avoiding them); System Events `entire contents` is flaky on webview
+  content (prefer the driver's AX tree there, osascript for native
+  panels); always make scripts RETURN what they clicked. Driver basics
+  still hold: fresh `capture` before every `element` click (indices die
+  with captures), `element` over coordinates.
 - **Plugin e2e tests need `python3`** and skip politely without it; they
   spawn real processes — do not run them under a cargo lock held by a
   concurrent `tauri build` (builds and tests serialize on `target/`).
