@@ -70,7 +70,18 @@ interface ModalAction {
   run: () => void;
 }
 
-function showModal(title: string, body: HTMLElement, actions: ModalAction[]): void {
+let modalReplaceCancel: (() => void) | null = null;
+
+function showModal(
+  title: string,
+  body: HTMLElement,
+  actions: ModalAction[],
+  onReplace?: () => void,
+): void {
+  // Replacing a visible modal would strand its promise forever; cancel it
+  // so the awaiting caller settles instead of hanging silently.
+  modalReplaceCancel?.();
+  modalReplaceCancel = onReplace ?? null;
   $("modal-title").textContent = title;
   const bodyEl = $("modal-body");
   bodyEl.innerHTML = "";
@@ -93,6 +104,7 @@ function showModal(title: string, body: HTMLElement, actions: ModalAction[]): vo
 }
 
 function hideModal(): void {
+  modalReplaceCancel = null;
   $("modal-overlay").classList.add("hidden");
 }
 
@@ -112,10 +124,15 @@ function promptText(title: string, initial: string): Promise<string | null> {
         resolve(null);
       }
     });
-    showModal(title, input, [
-      { label: "Cancel", run: () => resolve(null) },
-      { label: "OK", primary: true, run: () => resolve(input.value) },
-    ]);
+    showModal(
+      title,
+      input,
+      [
+        { label: "Cancel", run: () => resolve(null) },
+        { label: "OK", primary: true, run: () => resolve(input.value) },
+      ],
+      () => resolve(null),
+    );
     input.focus();
     input.select();
   });
@@ -135,7 +152,9 @@ function pickTab(title: string, candidates: Tab[]): Promise<Tab | null> {
       });
       body.appendChild(btn);
     }
-    showModal(title, body, [{ label: "Cancel", run: () => resolve(null) }]);
+    showModal(title, body, [{ label: "Cancel", run: () => resolve(null) }], () =>
+      resolve(null),
+    );
   });
 }
 
@@ -143,12 +162,78 @@ function confirmClose(tab: Tab): Promise<"save" | "discard" | "cancel"> {
   return new Promise((resolve) => {
     const body = document.createElement("p");
     body.textContent = `Save changes to "${tab.title}" before closing?`;
-    showModal("Unsaved changes", body, [
-      { label: "Cancel", run: () => resolve("cancel") },
-      { label: "Don't Save", run: () => resolve("discard") },
-      { label: "Save", primary: true, run: () => resolve("save") },
-    ]);
+    showModal(
+      "Unsaved changes",
+      body,
+      [
+        { label: "Cancel", run: () => resolve("cancel") },
+        { label: "Don't Save", run: () => resolve("discard") },
+        { label: "Save", primary: true, run: () => resolve("save") },
+      ],
+      () => resolve("cancel"),
+    );
   });
+}
+
+let closeFlowRunning = false;
+let startupComplete = false;
+let pendingExit = false;
+
+/**
+ * Entry point for every exit/close request (⌘Q, Quit menu, window close).
+ * Before startup finishes, the prompt flow would run over a half-restored
+ * tab set and persisting it would clobber the session file, so the request
+ * parks here and is re-issued once `start()` completes.
+ */
+function requestGuardedExit(): void {
+  if (!startupComplete) {
+    pendingExit = true;
+    return;
+  }
+  void promptDirtyAndExit();
+}
+
+/**
+ * Prompt per dirty tab, then flush the session and exit. This is the only
+ * path that may exit: the Rust side forwards every menu/window exit
+ * request here (see lib.rs). Known tao limitation: Dock-Quit and system
+ * logout terminate the app without asking — the debounced draft autosave
+ * is the safety net there.
+ */
+async function promptDirtyAndExit(): Promise<void> {
+  if (closeFlowRunning) {
+    return; // a quit/close is already being handled; don't stack prompts
+  }
+  closeFlowRunning = true;
+  let exiting = false;
+  try {
+    for (const tab of [...tabs.tabs]) {
+      if (tabs.isDirty(tab)) {
+        const choice = await confirmClose(tab);
+        if (choice === "cancel") {
+          return;
+        }
+        if (choice === "save" && !(await saveTab(tab))) {
+          return;
+        }
+      }
+    }
+    await persistSessionNow();
+    // Not awaited: process teardown is the success signal. The guard stays
+    // set through the exit attempt and resets only when the attempt fails,
+    // so no second prompt stack can appear and a retry re-enters cleanly.
+    exiting = true;
+    void ipc.exitApp().catch((err) => {
+      closeFlowRunning = false;
+      toast(`Exit failed: ${errorMessage(err)}`);
+    });
+  } catch (err) {
+    toast(`Close failed: ${errorMessage(err)}`);
+  } finally {
+    if (!exiting) {
+      closeFlowRunning = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1155,18 @@ function wireKeyboard(): void {
 // ---------------------------------------------------------------------------
 
 async function start(): Promise<void> {
+  // Attach both exit entry points before anything can await, so no quit or
+  // close request can slip through unwired; requests that arrive before
+  // startup completes park in `pendingExit` (see requestGuardedExit).
+  const appWindow = getCurrentWindow();
+  await listen("app-quit-requested", () => {
+    requestGuardedExit();
+  });
+  await appWindow.onCloseRequested((event) => {
+    event.preventDefault();
+    requestGuardedExit();
+  });
+
   defineThemes();
 
   panes = new PaneManager($("split-container"), {
@@ -1255,25 +1352,11 @@ async function start(): Promise<void> {
 
   await syncWatch();
 
-  // Prompt for unsaved work on any close path (Exit menu, ⌘Q, window
-  // close) and flush the session before the window goes away.
-  const appWindow = getCurrentWindow();
-  await appWindow.onCloseRequested(async (event) => {
-    event.preventDefault();
-    for (const tab of [...tabs.tabs]) {
-      if (tabs.isDirty(tab)) {
-        const choice = await confirmClose(tab);
-        if (choice === "cancel") {
-          return;
-        }
-        if (choice === "save" && !(await saveTab(tab))) {
-          return;
-        }
-      }
-    }
-    await persistSessionNow();
-    await appWindow.destroy();
-  });
+  startupComplete = true;
+  if (pendingExit) {
+    pendingExit = false;
+    requestGuardedExit();
+  }
 
   await listen<FileChangedPayload>("file-changed", (event) => {
     const tab = tabs.byPath(event.payload.path);
@@ -1320,4 +1403,13 @@ async function start(): Promise<void> {
   void refreshPlugins();
 }
 
-void start();
+// A failed startup must not leave the app unquittable: every close parks
+// behind `startupComplete`, so on failure let the guarded flow run over
+// whatever state exists rather than requiring a force-quit.
+void start().catch(() => {
+  startupComplete = true;
+  if (pendingExit) {
+    pendingExit = false;
+    requestGuardedExit();
+  }
+});

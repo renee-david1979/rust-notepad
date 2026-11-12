@@ -1,9 +1,13 @@
 //! Tauri IPC command surface. Every handler returns `CmdResult<T>` so
-//! failures arrive at the frontend as `{ message }`.
+//! failures arrive at the frontend as `{ message }` — except `exit_app`,
+//! whose only operation is infallible.
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 use serde::Serialize;
@@ -104,6 +108,29 @@ pub struct SavePayload {
 pub struct PluginStatus {
     pub plugins: Vec<PluginInfo>,
     pub warnings: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+
+/// Set only by `exit_app`, i.e. after the frontend's guarded close flow got
+/// the user's approval. Menu/window exit requests (⌘Q / Quit menu via the
+/// custom menu item in `lib.rs`, window close, and the `ExitRequested`
+/// backstop) are routed to that flow first; only approved exits proceed.
+/// Known tao limitation: Dock-Quit / system logout bypass the flow.
+static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
+
+/// True once the frontend's guarded close flow approved exiting (reads
+/// `EXIT_APPROVED`; see its comment for the interception design).
+pub fn exit_approved() -> bool {
+    EXIT_APPROVED.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub fn exit_app(app: tauri::AppHandle) {
+    EXIT_APPROVED.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 // ---------------------------------------------------------------------------

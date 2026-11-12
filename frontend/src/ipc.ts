@@ -13,6 +13,8 @@ export const ipc = {
 
   saveSession: (session: PersistedState) => invoke<void>("save_session", { session }),
 
+  exitApp: () => invoke<void>("exit_app"),
+
   readFile: (path: string) => invoke<FilePayload>("read_file", { path }),
 
   saveFile: (path: string, content: string, encoding: string, eol: string) =>
