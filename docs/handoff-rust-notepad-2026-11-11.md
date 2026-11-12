@@ -4,16 +4,20 @@
 VERIFIED through v0.2.0 scope plus the three nice-to-haves (file
 drag-drop, resizable split separator, tab reordering — `91c3847`), the
 follow-ups (`fe90eaa`), the v0.2.0 release run (`666c386`), the quit-
-interception fix (`7d09a7f`), and the plugin manager (`d841009`).**
-This is not an unexecuted plan — the app is built, tested (61 Rust + 15
+interception fix (`7d09a7f`), the plugin manager (`d841009`), and the
+diff-viewer improvements (`788ea3c`). Tip: `788ea3c`.**
+This is not an unexecuted plan — the app is built, tested (61 Rust + 17
 node tests), bundled, and live-verified in the running macOS app. The
 remaining items below are roadmap/optional work plus decisions only the
 user can make. Every fact below is a snapshot: re-verify before acting.
 
 **Resume procedure (cold session):** read sections 1–2 (locks), then
-verify section 3 facts live, then check the IN-FLIGHT block at the top
-of section 5 — finish it before starting anything new. Never present
-anything from this file as verified system state without re-checking it.
+verify section 3 facts live, then take the top item from section 5 (the
+user picks which; the TODO block at its top lists what is genuinely
+open). Never present anything from this file as verified system state
+without re-checking it. The file is self-contained; named skills
+(`screenshot-free-gui`, `tauri-app-development`) are optional depth, not
+required reading.
 
 ---
 
@@ -49,10 +53,13 @@ anything from this file as verified system state without re-checking it.
   strip; "Move Tab to Other View" (no clone-to-both-views feature; not
   requested).
 - **Diff model:** Monaco's built-in diff engine (`createDiffEditor`) for
-  visual compare (vs saved / vs tab / vs file on disk). NO custom diff
-  algorithm code. Plugin-based compare returns standard unified diffs
-  (toolkit `text.diff` via Python `difflib`). User explicitly wants wheels
-  reused, not reinvented — keep it that way.
+  visual compare (vs saved / vs tab / vs file on disk) with an options
+  toolbar (inline/side-by-side, whitespace, collapse-unchanged). NO
+  custom diff algorithm code: unified-patch TEXT export is jsdiff
+  (`frontend/src/patch.ts`, user-approved option "2" 2026-11-12);
+  plugin-based compare returns standard unified diffs (toolkit
+  `text.diff` via Python `difflib`, kept as the plugin-side demo).
+  User explicitly wants wheels reused, not reinvented — keep it that way.
 - **Search semantics:** literal terms are regex-escaped and matched with
   Unicode `\b` word semantics; case-insensitive by default; directory
   symlinks NEVER followed (cycle + read-escape guard); caps: 20 000
@@ -81,17 +88,17 @@ npm test          # frontend unit tests (tsc + node --test)
 | Fact | Value | Re-verify with |
 | --- | --- | --- |
 | Repo | `~/Projects/rust-notepad`, branch `rebuild` (the rebuild work), clean tree; local `main` = upstream snapshot (`3fb872d`) | `git -C ~/Projects/rust-notepad status` |
-| History | rebuild = all commits after upstream tip `3fb872d` (13 at last count) | `git log --oneline 3fb872d..HEAD` |
+| History | rebuild = all commits after upstream tip `3fb872d` (20 at `788ea3c`) | `git log --oneline 3fb872d..HEAD` |
 | Pushed? | **Pushed to the fork `renee-david1979/rust-notepad`** (git remote `fork`): branch `rebuild` = the rebuild work (verified against `git rev-parse HEAD`); fork `main` = upstream tip `3fb872d`. Upstream `smartpcr/rust-notepad` (remote `origin`) is owned by Xiaodong Li (GitHub `smartpcr`, the original author) — read-only for us; he can pull from the fork if he wants the work upstream. | `git ls-remote fork main rebuild` |
-| Tests | 61 Rust green (53 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) + 15 node unit tests (`npm test`: tsc type-check + `node --test`) | gate commands above + `npm test` |
-| Bundles | `target/release/bundle/macos/RustNotepad.app`, `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` — STALE relative to the diff-viewer work (built at `d841009`) | `ls target/release/bundle/` (target/ is disposable — rebuild with `npx tauri build`) |
+| Tests | 61 Rust green (53 unit + 8 real-subprocess plugin e2e in `src-tauri/tests/plugin_host_e2e.rs`) + 17 node unit tests (`npm test`: tsc type-check + `node --test`) | gate commands above + `npm test` |
+| Bundles | `target/release/bundle/macos/RustNotepad.app`, `target/release/bundle/dmg/RustNotepad_0.2.0_aarch64.dmg` — built from the `788ea3c` tree (current) during the diff live-verify | `ls target/release/bundle/` (target/ is disposable — rebuild with `npx tauri build`) |
 | Release | tag `v0.2.0` on `666c386`, pushed to `fork`; Release workflow green on all 3 OS legs (run `43094512673`); **DRAFT GitHub release with 7 assets** (dmg, app.tar.gz, deb, rpm, AppImage, msi, exe) — **publish manually** on the fork's Releases page. `gh release` CANNOT see it: the fine-grained PAT lacks Contents scope (drafts invisible; `POST /releases` = 403). Verify via run logs ("Found draft release with tag v0.2.0") or the owner's browser | release workflow logs / owner's browser |
 | Toolchain | rustc 1.96.0, node 26.13.0, npm 12.2.2, full Xcode at `/Applications/Xcode.app` | `rustc --version; node --version` |
-| Frontend pins | monaco-editor 0.57.0, vite 8.3.8, typescript 7.0.2, @tauri-apps/api 2.12.4 | `package.json` + `npm ls` |
+| Frontend pins | monaco-editor 0.57.0, vite 8.3.8, typescript 7.0.2, @tauri-apps/api 2.12.4, diff (jsdiff) 9.0.0 | `package.json` + `npm ls` |
 | npm audit | 0 vulnerabilities (with dompurify override) | `npm audit --audit-level=high` |
 | Session file | `~/Library/Application Support/com.smartpcr.rust-notepad/session.json` (includes `split_ratio` for split widths) | `cat` it |
 | App ID / version | `com.smartpcr.rust-notepad`, 0.2.0 | `src-tauri/tauri.conf.json` |
-| Live UI verified | split view, diff view (saved-vs-buffer, red/green), plugin `text.word_count` round trip, draft restore + dirty dot, tab drag reorder (within-pane + cross-pane drop), split-separator resize, `split_ratio` + tab-order restore after restart — all real mouse-driven checks in the running bundle via `computer_use`. NOT manually checked yet: Finder→window file drop (tool can't drive cross-window drags) | relaunch app + `computer_use` capture |
+| Live UI verified | split view; diff view (saved-vs-buffer, vs-tab, vs-disk with toolbar toggles, Copy-as-patch verified via `pbpaste`, banner Compare + hide-on-success); plugin manager (folder-picker install of a fixture, capability invoke end-to-end, disable/enable round-trips with `plugins.json` checks, remove with confirm modal + disk cleanup); quit flow prompts per dirty tab in order (window close AND ⌘Q/menu-quit); draft restore + dirty dot; tab drag reorder (within-pane + cross-pane); split-separator resize + `split_ratio`/tab-order restore. NOT manually checked: Finder→window file drop (tools can't drive cross-window drags — worth one manual drag) | relaunch app + `computer_use` (AX mode) or skill `screenshot-free-gui` |
 
 ## 4. Existing machinery to build on (exact paths)
 
@@ -109,7 +116,8 @@ npm test          # frontend unit tests (tsc + node --test)
   tolerant), Monaco language mapping.
 - `frontend/src/` — `main.ts` (actions/menus/shortcuts/session/restore),
   `tabs.ts` (pane-aware TabManager), `panes.ts` (split container),
-  `diff.ts` (Monaco diff wrapper), `find.ts`, `panels.ts`, `menus.ts`,
+  `diff.ts` (Monaco diff wrapper + options toolbar + patch copy/export),
+  `find.ts`, `panels.ts`, `menus.ts`,
   `statusbar.ts`, `monaco-setup.ts` (workers via
   `monaco-editor/editor/editor.worker?worker` style paths — 0.57 exports
   map!), `types.ts` (IPC mirrors, snake_case).
@@ -134,8 +142,13 @@ npm test          # frontend unit tests (tsc + node --test)
 
 ## 5. Remaining tasks (IN ORDER; each self-contained)
 
-**✅ DONE 2026-11-12: diff-viewer improvements** (committed with this
-update). Scope (user picked "2" = Monaco built-in knobs + jsdiff):
+**📌 OPEN as of `788ea3c` — pick with the user (nothing in flight; tree
+clean and pushed):** (a) publish the draft v0.2.0 release — item 2, the
+user's browser only; (b) roadmap features — item 4's list, the user
+picks; (c) one manual Finder→window file drag — item 5's caveat;
+(d) parked nits — end of section 6. Everything else is DONE below.
+
+**✅ DONE 2026-11-12: diff-viewer improvements** (`788ea3c`). Scope (user picked "2" = Monaco built-in knobs + jsdiff):
 `diff.ts` toolbar (Inline/Side-by-side, Ignore-whitespace,
 Collapse-unchanged toggles + `renderIndicators`); "Copy as patch" /
 "Export .patch…" via the pure `patch.ts` (jsdiff `createTwoFilesPatch`,
@@ -184,11 +197,12 @@ auto-reload + toast; dirty → banner), banner Compare opens
    NOTE: the plugin manager UI (install/enable/disable/remove) from this
    roadmap was DONE 2026-11-12 — Plugins panel toolbar + per-plugin
    toggles, plugins.json disabled list, staged/atomic install with path
-   guards, remove limited to installed plugins. Remaining roadmap is the
-   list above.
+   guards, remove limited to installed plugins. Remaining roadmap is
+   item 4's list.
 4. **Roadmap features (user picks, order advisory):** macro
-   record/playback; function list / document map; hex viewer; diff-viewer
-   improvements (inline unified-diff rendering); UDL editor; i18n. PRD
+   record/playback; function list / document map; hex viewer; UDL
+   editor; i18n. (Diff-viewer improvements were DONE 2026-11-12 — see
+   the block at the top of this section.) PRD
    with full specs: `docs/notepad-plus-plus-clone-prd.md`. For each: extend
    the existing module named in section 4 — e.g. macros hook the
    `main.ts` action registry; a hex viewer is a new pane-mode reading via
@@ -304,3 +318,23 @@ auto-reload + toast; dirty → banner), banner Compare opens
   can't be intercepted, the custom-menu fix, Dock-Quit limitation) is
   captured in the `tauri-app-development` skill — load it before touching
   quit/close/menu code here.
+- **Session JSON surgery for tests:** draft CONTENT lives under nested
+  keys (a key-based scrub missed it once — search by VALUE for test
+  strings), and `recent_files` keeps paths after their tabs close —
+  clean both when removing test fixtures. Tab entries and recents are
+  separate structures; check the whole JSON for residue.
+- **Monaco silently drops synthetic typing** (CGEvent `type` reports 0
+  chars delivered on its textarea). To dirty a buffer programmatically,
+  use the app's own actions: `set_value` on the find/replace AXTextFields
+  + Replace All works (live-proven). `set_value` on webview fields goes
+  through the AX API and is not subject to the event filtering.
+- **Native dialogs (NSOpenPanel etc.): drive them with ONE atomic
+  osascript script** (set frontmost, ⌘⇧G, type path, Return — with
+  delays), not interleaved per-key tool calls: `delivery_mode:
+  'foreground'` restores focus between calls and desyncs the sheet.
+  Sheets don't appear in `get name of windows` — `list_windows` sees
+  them. A file path in go-to-folder opens the file directly.
+- **Parked nits (deliberately deferred, low value):** diff toolbar
+  toggle-state persistence across views; consolidating the toolkit
+  `text.diff` plugin path with the jsdiff patch export (kept separate
+  for now — the plugin path is the live plugin-host demo).
